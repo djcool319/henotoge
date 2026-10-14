@@ -9,7 +9,7 @@ Swift (SpriteKit + SwiftUI) で作った縦4レーンの iOS 音ゲー。曲・�
   コースごとに GREAT / GOOD / MISS の残り回数が決まっていて、0未満になった時点で不合格。
 - **設定** … ハイスピード、タイミング調整、記録リセット。
 
-判定は PERFECT ±40ms / GREAT ±80ms / GOOD ±120ms。スコアは1曲 1,000,000 点満点。
+判定は PERFECT ±30ms / GREAT ±60ms / GOOD ±100ms / MISS ±120ms(早すぎるタップ)。スコアは1曲 1,000,000 点満点。
 
 ## ipa の入手
 

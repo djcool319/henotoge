@@ -6,7 +6,7 @@ struct GameSKView: UIViewRepresentable {
     let scene: SKScene
 
     func makeUIView(context: Context) -> SKView {
-        let view = SKView()
+        let view = SKView(frame: CGRect(origin: .zero, size: scene.size))
         view.isMultipleTouchEnabled = true
         view.ignoresSiblingOrder = true
         view.preferredFramesPerSecond = 120

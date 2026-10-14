@@ -121,7 +121,17 @@ final class GameScene: SKScene {
 
     override func didMove(to view: SKView) {
         view.isMultipleTouchEnabled = true
-        guard !didSetup else { return }
+        setupIfReady()
+    }
+
+    override func didChangeSize(_ oldSize: CGSize) {
+        super.didChangeSize(oldSize)
+        setupIfReady()
+    }
+
+    /// 表示直後は画面サイズが 0 のことがあるので、ちゃんとした大きさになってから組み立てる
+    private func setupIfReady() {
+        guard !didSetup, view != nil, size.width >= 100, size.height >= 200 else { return }
         didSetup = true
         setupLayout()
         setupHUD()
@@ -499,7 +509,7 @@ final class GameScene: SKScene {
                 return
             }
 
-            guard phase == .playing else { continue }
+            guard phase == .playing, laneWidth > 0 else { continue }
             let rawLane = Int(floor((p.x - laneLeft) / laneWidth))
             let lane = min(max(0, rawLane), laneCount - 1)
             flashBeam(lane)
