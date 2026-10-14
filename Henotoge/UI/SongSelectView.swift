@@ -10,7 +10,7 @@ struct SongSelectView: View {
         ZStack {
             Background()
             ScrollView {
-                LazyVStack(spacing: 12) {
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: 330), spacing: 12)], spacing: 12) {
                     ForEach(library.songs) { song in
                         SongRow(song: song, records: records) { chart in
                             request = .free(song: song, chart: chart)
@@ -18,7 +18,7 @@ struct SongSelectView: View {
                     }
                 }
                 .padding(16)
-                .frame(maxWidth: 620)
+                .frame(maxWidth: 1100)
                 .frame(maxWidth: .infinity)
             }
         }

@@ -42,7 +42,7 @@ enum Judgment: Int, CaseIterable, Codable {
 
 /// 判定幅(秒)
 enum JudgeWindow {
-    static let perfect = 0.030
+    static let perfect = 0.040
     static let great = 0.060
     static let good = 0.100
     /// GOOD より外で、これ以内の早すぎるタップは MISS。これより早いタップは無視

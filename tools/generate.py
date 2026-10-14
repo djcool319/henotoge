@@ -24,7 +24,7 @@ import numpy as np
 from scipy.signal import lfilter
 
 SR = 44100
-LANES = 4
+LANES = 6
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 OUT_DIR = os.path.join(ROOT, "Henotoge", "Resources")
 SONG_DIR = os.path.join(OUT_DIR, "Songs")
@@ -72,20 +72,21 @@ ARTIST = "henotoge sound team"
 
 # ------------------------------------------------------------
 # 段位認定 (3曲メドレー)
-#   limits: そのコース全体で許される回数。0未満になったら不合格。
-#           null は無制限。
+#   gauge: 最初のゲージ量。判定ごとに cost の分だけ減り、0未満になったら不合格。
 # ------------------------------------------------------------
+DEFAULT_COST = {"PERFECT": 0, "GREAT": 1, "GOOD": 2, "MISS": 3}
+
 COURSES = [
     dict(id="dan1", name="初段", stages=[("s01", "EXTREME"), ("s02", "EXTREME"), ("s03", "EXTREME")],
-         limits={"GREAT": None, "GOOD": 60, "MISS": 30}),
+         gauge=400, cost=DEFAULT_COST),
     dict(id="dan2", name="三段", stages=[("s04", "EXTREME"), ("s05", "EXTREME"), ("s06", "EXTREME")],
-         limits={"GREAT": None, "GOOD": 45, "MISS": 20}),
+         gauge=330, cost=DEFAULT_COST),
     dict(id="dan3", name="五段", stages=[("s07", "EXTREME"), ("s08", "EXTREME"), ("s10", "EXTREME")],
-         limits={"GREAT": None, "GOOD": 30, "MISS": 12}),
+         gauge=270, cost=DEFAULT_COST),
     dict(id="dan4", name="八段", stages=[("s11", "EXTREME"), ("s09", "INSANE"), ("s12", "INSANE")],
-         limits={"GREAT": 200, "GOOD": 25, "MISS": 8}),
+         gauge=210, cost=DEFAULT_COST),
     dict(id="dan5", name="皆伝", stages=[("s13", "INSANE"), ("s14", "INSANE"), ("s15", "INSANE")],
-         limits={"GREAT": 120, "GOOD": 15, "MISS": 3}),
+         gauge=150, cost=DEFAULT_COST),
 ]
 
 # レベルごとの1秒あたりノーツ数の目安
@@ -422,6 +423,7 @@ def build_song(spec):
                     0.11)
             mark(base + s, "lead", 1.0)
             events[base + s]["pitch"] = n
+            events[base + s]["lead_len"] = max(1, nxt - s)
 
     # ---- 仕上げ ----
     buf = mix.buf
@@ -445,28 +447,115 @@ def build_song(spec):
 
 # ------------------------------------------------------------
 # 譜面
+#   ノーツの種類:
+#     tap   … 叩く
+#     hold  … e まで押しっぱなし
+#     slide … 押したまま、p の位置に沿って指を動かす
+#     wipe  … d の向き(-1=左, 1=右)にこする
+#   どの瞬間も「指2本」で取れるように、指の空き具合をシミュレーションしながら置く。
 # ------------------------------------------------------------
 WEIGHT = {"kick": 3.0, "snare": 3.0, "crash": 2.0, "lead": 2.6, "bass": 1.2, "arp": 1.0, "hat": 0.6}
+
+# 1本の指が次のノーツを取るのに最低限ほしい間隔(秒)
+FINGER_GAP = 0.09
+
+# レベルごとの「ノーツ同士の最低間隔(秒)」。低レベルは詰めない
+MIN_GAP = {1: 0.55, 2: 0.4, 3: 0.3, 4: 0.22, 5: 0.17, 6: 0.14, 7: 0.11, 8: 0.09, 9: 0.075, 10: 0.06}
+CHORD = {1: 0, 2: 0, 3: 0.03, 4: 0.06, 5: 0.10, 6: 0.13, 7: 0.16, 8: 0.19, 9: 0.22, 10: 0.25}
+HOLD_PROB = {1: 0, 2: 0.3, 3: 0.35, 4: 0.4, 5: 0.4, 6: 0.45, 7: 0.45, 8: 0.5, 9: 0.5, 10: 0.5}
+SLIDES = {4: 2, 5: 3, 6: 4, 7: 5, 8: 6, 9: 7, 10: 8}
 
 
 def make_chart(spec, meta, difficulty, level):
     rng = np.random.default_rng(int(spec["id"][1:]) * 101 + level * 7 + len(difficulty))
     step = meta["step"]
     events = meta["events"]
+    sections = meta["sections"]
+    insane = difficulty == "INSANE"
 
-    # 使っていい細かさ
+    def T(si):
+        return LEAD_IN + si * step
+
     if level <= 2:
         allowed = lambda s: s % 4 == 0
-    elif level <= 4:
+    elif level <= 5:
         allowed = lambda s: s % 2 == 0
-    elif level <= 6:
-        allowed = lambda s: s % 2 == 0 or level >= 6
     else:
         allowed = lambda s: True
 
+    play_sec = meta["n_steps"] * step
+    target = int(NPS[level] * play_sec * (1.12 if insane else 1.0))
+    min_gap_sec = MIN_GAP[level]
+    min_gap = max(1, int(math.ceil(min_gap_sec / step - 1e-6)))
+
+    objs = []
+    used = set()      # 特殊ノーツが置かれたステップ
+    blocked = set()   # タップを置かないステップ (低レベルのスライド中など)
+
+    # ---- ワイプ: セクションの頭、盛り上がりの切れ目 ----
+    if level >= 3:
+        wsteps = set()
+        for si, ev in events.items():
+            if ev.get("crash", 0) > 0 and si % 16 == 0:
+                wsteps.add(si)
+        for bar, sec in enumerate(sections):
+            if sec == "B" and bar % 4 == 0 and level >= 6:
+                wsteps.add(bar * 16)
+            if sec == "B" and bar % 4 == 3 and level >= 8 and rng.random() < 0.6:
+                wsteps.add(bar * 16 + 12)
+        d = int(rng.choice([-1, 1]))
+        for si in sorted(wsteps):
+            if si not in events:
+                continue
+            objs.append(dict(kind="wipe", si=si, dir=d))
+            used.add(si)
+            d = -d
+
+    # ---- スライド: メロディの動きに沿って指を動かす ----
+    n_slides = SLIDES.get(level, 0) + (2 if insane else 0)
+    if n_slides:
+        span = 8 if meta["bpm"] >= 120 else 4
+        if meta["bpm"] < 140 and level <= 6:
+            span = 16 if meta["bpm"] < 120 else 8
+        bars = [b for b, sec in enumerate(sections) if sec in ("A", "B")]
+        rng.shuffle(bars)
+        bars.sort(key=lambda b: 0 if sections[b] == "B" else 1)
+        picked = []
+        for b in bars:
+            if len(picked) >= n_slides:
+                break
+            if any(abs(b - p) < 3 for p in picked):
+                continue
+            start = b * 16 + (8 if span <= 8 and rng.random() < 0.5 else 0)
+            end = start + span
+            onsets = [si for si in range(start, end) if "pitch" in events.get(si, {})]
+            if len(onsets) < 2 or start not in onsets or start in used:
+                continue
+            picked.append(b)
+            objs.append(dict(kind="slide", si=start, end_si=end, onsets=onsets))
+            used.add(start)
+            if level < 7:
+                blocked.update(range(start - 1, end + 2))
+
+    # ---- ホールド: 長く伸びるメロディ ----
+    hp = HOLD_PROB[level]
+    min_hold = 6 if level <= 3 else 4
+    if hp > 0:
+        for si in sorted(events):
+            ev = events[si]
+            L = ev.get("lead_len", 0)
+            if L < min_hold or si in used or si in blocked or not allowed(si):
+                continue
+            if rng.random() < hp:
+                objs.append(dict(kind="hold", si=si, end_si=si + L - 1))
+                used.add(si)
+                if level < 5:
+                    blocked.update(range(si + 1, si + L))
+
+    # ---- タップ ----
     cands = []
     for si, ev in events.items():
-        if not allowed(si):
+        if si in used or si in blocked or not allowed(si):
             continue
         w = sum(WEIGHT.get(k, 0) * v for k, v in ev.items() if k in WEIGHT)
         if si % 16 == 0:
@@ -481,88 +570,201 @@ def make_chart(spec, meta, difficulty, level):
         cands.append((w, si))
     cands.sort(reverse=True)
 
-    play_sec = meta["n_steps"] * step
-    # INSANE は同じレベルでも一段詰める
-    target = int(NPS[level] * play_sec * (1.12 if difficulty == "INSANE" else 1.0))
-
-    # 最低間隔(ステップ数)。低レベルは詰めない
-    min_gap_sec = {1: 0.55, 2: 0.4, 3: 0.3, 4: 0.22, 5: 0.17, 6: 0.14, 7: 0.11, 8: 0.09, 9: 0.075, 10: 0.06}[level]
-    min_gap = max(1, int(math.ceil(min_gap_sec / step - 1e-6)))
-
-    # 同時押しの量
-    chord2 = {1: 0, 2: 0, 3: 0.03, 4: 0.06, 5: 0.10, 6: 0.14, 7: 0.18, 8: 0.22, 9: 0.26, 10: 0.30}[level]
-    chord3 = {8: 0.03, 9: 0.06, 10: 0.10}.get(level, 0)
-
-    chosen = {}
-    taken = set()
-    count = 0
+    taken = set(used)
+    count = len(objs)
     for w, si in cands:
         if count >= target:
             break
         if any((si + d) in taken for d in range(-min_gap + 1, min_gap)):
             continue
         ev = events[si]
+        strong = ev.get("kick", 0) > 0 and (ev.get("snare", 0) > 0 or ev.get("lead", 0) > 0)
         size = 1
-        strong = ev.get("crash", 0) > 0 or (ev.get("kick", 0) > 0 and (ev.get("snare", 0) > 0 or ev.get("lead", 0) > 0))
-        if strong or si % 16 == 0:
-            r = rng.random()
-            if r < chord3 * 2.5:
-                size = 3
-            elif r < chord2 * 2.5:
-                size = 2
-        elif rng.random() < chord2 * 0.5:
+        if rng.random() < CHORD[level] * (2.5 if strong or si % 16 == 0 else 0.5):
             size = 2
-        size = min(size, max(1, target - count))
-        chosen[si] = size
+        objs.append(dict(kind="tap", si=si, size=size))
         taken.add(si)
         count += size
 
-    # レーン割り当て
+    # ---- 時間順に、指2本で取れるか確かめながらレーンを決める ----
+    order = {"wipe": 0, "slide": 1, "hold": 2, "tap": 3}
+    objs.sort(key=lambda o: (o["si"], order[o["kind"]]))
+
+    fingers = [-10.0, -10.0]
+    actives = []  # (終了時刻, 位置を返す関数)
     notes = []
-    prev_lanes = []
-    prev_t = -10.0
+    cursor = float(rng.integers(0, LANES - 1))
     prev_pitch = None
-    lane = int(rng.integers(0, LANES))
-    for si in sorted(chosen):
-        size = chosen[si]
-        t = LEAD_IN + si * step
-        gap = t - prev_t
-        ev = events[si]
+    last_t = -10.0
+    prev_span = None
+
+    def width_for():
+        if level <= 2:
+            return 2
+        if level <= 5:
+            return 2 if rng.random() < 0.7 else 1
+        return 1 if rng.random() < 0.7 else 2
+
+    def occupied(t):
+        out = []
+        for end_t, pos in actives:
+            if end_t >= t - 0.05:
+                out.append(pos(t))
+        return out
+
+    def overlaps(lo, hi, spans):
+        return any(lo < b and a < hi for a, b in spans)
+
+    def place(want, w, t, extra=()):
+        spans = occupied(t) + list(extra)
+        best = None
+        for l in range(0, LANES - w + 1):
+            if overlaps(l, l + w, spans):
+                continue
+            score = abs(l - want)
+            if best is None or score < best[0]:
+                best = (score, l)
+        return None if best is None else best[1]
+
+    def take(t, need, until):
+        free = [i for i in (0, 1) if fingers[i] <= t - FINGER_GAP]
+        if len(free) < need:
+            return False
+        for i in free[:need]:
+            fingers[i] = until
+        return True
+
+    for o in objs:
+        si = o["si"]
+        t = T(si)
+        kind = o["kind"]
+        if t - last_t < min_gap_sec * 0.999 and kind != "wipe":
+            continue
+
+        ev = events.get(si, {})
         pitch = ev.get("pitch")
         if pitch is not None and prev_pitch is not None:
             diff = pitch - prev_pitch
-            if diff > 0:
-                lane = lane + (1 if diff <= 3 else 2)
-            elif diff < 0:
-                lane = lane - (1 if diff >= -3 else 2)
-            else:
-                lane = lane + int(rng.choice([-1, 1])) if gap < 0.25 else lane
+            cursor += max(-2.0, min(2.0, diff * 0.5))
         else:
-            lane = lane + int(rng.choice([-2, -1, 1, 2]))
-        lane = lane % LANES
+            cursor += float(rng.choice([-2, -1, 1, 2]))
+        if cursor < 0:
+            cursor = -cursor
+        if cursor > LANES - 1:
+            cursor = 2 * (LANES - 1) - cursor
+        cursor = max(0.0, min(LANES - 1.0, cursor))
         if pitch is not None:
             prev_pitch = pitch
 
-        # 速い連打(同じレーン)を避ける
-        if gap < 0.22 and lane in prev_lanes:
-            free = [l for l in range(LANES) if l not in prev_lanes]
-            if free:
-                lane = min(free, key=lambda l: abs(l - lane))
-        lanes = [lane]
-        if size > 1:
-            pool = [l for l in range(LANES) if l != lane and not (gap < 0.16 and l in prev_lanes)]
-            if len(pool) < size - 1:
-                pool = [l for l in range(LANES) if l != lane]
-            # 離れたレーンを優先
-            pool.sort(key=lambda l: -abs(l - lane) + rng.random() * 0.5)
-            lanes += pool[: size - 1]
-        for l in sorted(lanes):
-            notes.append([int(round(t * 1000)), int(l)])
-        prev_lanes = lanes
-        prev_t = t
+        ms = int(round(t * 1000))
 
-    notes.sort()
+        if kind == "wipe":
+            if not take(t, 1, t + 0.08):
+                continue
+            w = 3 if level < 7 else int(rng.integers(2, 5))
+            l = place(int(round(cursor)) - 1, w, t)
+            if l is None:
+                continue
+            notes.append({"k": "wipe", "t": ms, "l": l, "w": w, "d": o["dir"]})
+
+        elif kind == "hold":
+            end_t = T(o["end_si"])
+            w = width_for()
+            want = int(round(cursor))
+            extra = [prev_span] if (prev_span and t - last_t < 0.2) else []
+            l = place(want, w, t, extra)
+            if l is None or not take(t, 1, end_t):
+                continue
+            notes.append({"k": "hold", "t": ms, "l": l, "w": w, "e": int(round(end_t * 1000))})
+            lo, hi = l, l + w
+            actives.append((end_t, lambda _t, lo=lo, hi=hi: (lo, hi)))
+            prev_span = (lo, hi)
+
+        elif kind == "slide":
+            end_t = T(o["end_si"])
+            w = 2
+            pitches = [events[s]["pitch"] for s in o["onsets"]]
+            pmin, pmax = min(pitches), max(pitches)
+            pts = []
+            for k, s in enumerate(o["onsets"]):
+                if pmax > pmin:
+                    lane = int(round((events[s]["pitch"] - pmin) / (pmax - pmin) * (LANES - w)))
+                else:
+                    lane = (LANES - w) if k % 2 else 0
+                pts.append([T(s), lane])
+            # 始点は今のカーソル寄りに、急すぎる移動はならす
+            shift = int(round(cursor)) - pts[0][1]
+            for p in pts:
+                p[1] = max(0, min(LANES - w, p[1] + shift))
+            for k in range(1, len(pts)):
+                dt = pts[k][0] - pts[k - 1][0]
+                max_move = max(1, int(dt * 10))  # 1秒に10レーンまで
+                dl = pts[k][1] - pts[k - 1][1]
+                if abs(dl) > max_move:
+                    pts[k][1] = pts[k - 1][1] + max_move * (1 if dl > 0 else -1)
+            pts.append([end_t, pts[-1][1]])
+            if overlaps(pts[0][1], pts[0][1] + w, occupied(t)) or not take(t, 1, end_t):
+                continue
+            notes.append({"k": "slide", "t": ms, "l": pts[0][1], "w": w, "e": int(round(end_t * 1000)),
+                          "p": [[int(round(a * 1000)), b] for a, b in pts]})
+
+            def pos(_t, pts=pts, w=w):
+                if _t <= pts[0][0]:
+                    return (pts[0][1], pts[0][1] + w)
+                for a, b in zip(pts, pts[1:]):
+                    if a[0] <= _t <= b[0]:
+                        r = (_t - a[0]) / max(1e-6, b[0] - a[0])
+                        x = a[1] + (b[1] - a[1]) * r
+                        return (x - 0.5, x + w + 0.5)
+                return (pts[-1][1], pts[-1][1] + w)
+
+            actives.append((end_t, pos))
+            prev_span = (pts[-1][1], pts[-1][1] + w)
+
+        else:  # tap
+            size = o["size"]
+            need = size
+            if not take(t, need, t):
+                if size == 2 and take(t, 1, t):
+                    size = 1
+                else:
+                    continue
+            extra = [prev_span] if (prev_span and t - last_t < 0.2) else []
+            if size == 1:
+                w = width_for()
+                l = place(int(round(cursor)), w, t, extra)
+                if l is None:
+                    continue
+                notes.append({"k": "tap", "t": ms, "l": l, "w": w})
+                prev_span = (l, l + w)
+            else:
+                w = 1 if level >= 6 else 2
+                a = place(int(rng.integers(0, 2)), w, t)
+                if a is None:
+                    continue
+                b = place(LANES - w - int(rng.integers(0, 2)), w, t, [(a, a + w)])
+                notes.append({"k": "tap", "t": ms, "l": a, "w": w})
+                if b is not None:
+                    notes.append({"k": "tap", "t": ms, "l": b, "w": w})
+                prev_span = (a, (b if b is not None else a) + w)
+
+        last_t = t
+        actives = [x for x in actives if x[0] >= t - 0.1]
+
+    notes.sort(key=lambda n: (n["t"], n["l"]))
     return notes
+
+
+def check_two_fingers(notes):
+    """どの瞬間も指2本で足りるか確認する (足りなければ例外)"""
+    fingers = [-10.0, -10.0]
+    for n in notes:
+        t = n["t"] / 1000
+        until = n.get("e", n["t"]) / 1000
+        free = [i for i in (0, 1) if fingers[i] <= t - FINGER_GAP + 1e-6]
+        if not free:
+            raise AssertionError(f"指が足りない: {n}")
+        fingers[free[0]] = until
 
 
 def encode(buf, path_base):
@@ -590,7 +792,7 @@ def encode(buf, path_base):
 
 def main():
     os.makedirs(SONG_DIR, exist_ok=True)
-    library = {"version": 1, "leadIn": LEAD_IN, "lanes": LANES, "songs": [], "courses": []}
+    library = {"version": 2, "leadIn": LEAD_IN, "lanes": LANES, "songs": [], "courses": []}
     report = []
     for spec in SONGS:
         buf, meta = build_song(spec)
@@ -601,10 +803,13 @@ def main():
                 continue
             lv = spec["levels"][diff]
             notes = make_chart(spec, meta, diff, lv)
+            check_two_fingers(notes)
             charts.append({"difficulty": diff, "level": lv, "notes": notes})
             play = meta["n_steps"] * meta["step"]
+            kinds = {k: sum(1 for n in notes if n["k"] == k) for k in ("tap", "hold", "slide", "wipe")}
             report.append(f"{spec['id']} {spec['title']:<16} {diff:<8} Lv{lv:<2} notes={len(notes):4d} "
-                          f"nps={len(notes) / play:4.1f}")
+                          f"nps={len(notes) / play:4.1f}  tap={kinds['tap']} hold={kinds['hold']} "
+                          f"slide={kinds['slide']} wipe={kinds['wipe']}")
         library["songs"].append({
             "id": spec["id"],
             "title": spec["title"],
@@ -621,7 +826,8 @@ def main():
             "id": c["id"],
             "name": c["name"],
             "stages": [{"song": s, "difficulty": d} for s, d in c["stages"]],
-            "limits": c["limits"],
+            "gauge": c["gauge"],
+            "cost": c["cost"],
         })
 
     with open(os.path.join(OUT_DIR, "library.json"), "w", encoding="utf-8") as f:

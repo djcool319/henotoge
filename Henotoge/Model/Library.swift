@@ -18,10 +18,76 @@ enum Difficulty: String, Codable, CaseIterable, Identifiable {
     }
 }
 
+/// スライドの通り道の1点
+struct SlidePoint {
+    let time: Double
+    let lane: Double
+}
+
 /// 譜面の1ノーツ
-struct ChartNote {
-    let time: Double  // 秒 (音源の先頭から)
-    let lane: Int
+struct ChartNote: Decodable {
+    enum Kind: String, Decodable {
+        case tap, hold, slide, wipe
+    }
+
+    let kind: Kind
+    /// 判定の時刻(秒、音源の先頭から)
+    let time: Double
+    /// 左端のレーン
+    let lane: Double
+    /// 何レーン分の幅か
+    let width: Double
+    /// ホールド・スライドの終わり
+    let end: Double
+    /// スライドの通り道
+    let path: [SlidePoint]
+    /// ワイプの向き (-1 = 左, 1 = 右)
+    let dir: Int
+
+    /// このノーツで判定がいくつ出るか (ホールド・スライドは始点と終点の2つ)
+    var judgeCount: Int {
+        switch kind {
+        case .hold, .slide: return 2
+        case .tap, .wipe: return 1
+        }
+    }
+
+    var isLong: Bool { kind == .hold || kind == .slide }
+
+    /// ある時刻の左端レーン (スライドは通り道に沿って動く)
+    func lanePosition(at t: Double) -> Double {
+        guard kind == .slide, let first = path.first else { return lane }
+        if t <= first.time { return first.lane }
+        for i in 1..<path.count {
+            let a = path[i - 1]
+            let b = path[i]
+            if t <= b.time {
+                let r = (t - a.time) / max(0.0001, b.time - a.time)
+                return a.lane + (b.lane - a.lane) * r
+            }
+        }
+        return path.last?.lane ?? lane
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case k, t, l, w, e, p, d
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        kind = (try? c.decode(Kind.self, forKey: .k)) ?? .tap
+        time = Double(try c.decode(Int.self, forKey: .t)) / 1000.0
+        lane = try c.decode(Double.self, forKey: .l)
+        width = (try? c.decode(Double.self, forKey: .w)) ?? 1
+        let e = try c.decodeIfPresent(Int.self, forKey: .e)
+        end = e.map { Double($0) / 1000.0 } ?? time
+        let raw = try c.decodeIfPresent([[Double]].self, forKey: .p) ?? []
+        path = raw.compactMap { pair in
+            guard pair.count >= 2 else { return nil }
+            return SlidePoint(time: pair[0] / 1000.0, lane: pair[1])
+        }
+        dir = try c.decodeIfPresent(Int.self, forKey: .d) ?? 1
+    }
 }
 
 /// 譜面
@@ -32,20 +98,9 @@ struct Chart: Decodable, Identifiable {
 
     var id: String { difficulty.rawValue }
 
-    enum CodingKeys: String, CodingKey {
-        case difficulty, level, notes
-    }
-
-    init(from decoder: Decoder) throws {
-        let c = try decoder.container(keyedBy: CodingKeys.self)
-        difficulty = try c.decode(Difficulty.self, forKey: .difficulty)
-        level = try c.decode(Int.self, forKey: .level)
-        // JSON では [ミリ秒, レーン] の配列で持っている
-        let raw = try c.decode([[Int]].self, forKey: .notes)
-        notes = raw.compactMap { pair in
-            guard pair.count >= 2 else { return nil }
-            return ChartNote(time: Double(pair[0]) / 1000.0, lane: pair[1])
-        }
+    /// 判定の総数 (スコアの分母)
+    var totalJudgments: Int {
+        notes.reduce(0) { $0 + $1.judgeCount }
     }
 }
 
@@ -70,16 +125,27 @@ struct Song: Decodable, Identifiable {
     }
 }
 
-/// 段位の条件。nil は無制限。
-struct CourseLimits: Decodable {
-    let great: Int?
-    let good: Int?
-    let miss: Int?
+/// 段位ゲージの減り方
+struct CourseCost: Decodable {
+    let perfect: Int
+    let great: Int
+    let good: Int
+    let miss: Int
 
     enum CodingKeys: String, CodingKey {
+        case perfect = "PERFECT"
         case great = "GREAT"
         case good = "GOOD"
         case miss = "MISS"
+    }
+
+    func cost(for j: Judgment) -> Int {
+        switch j {
+        case .perfect: return perfect
+        case .great: return great
+        case .good: return good
+        case .miss: return miss
+        }
     }
 }
 
@@ -93,7 +159,9 @@ struct Course: Decodable, Identifiable {
     let id: String
     let name: String
     let stages: [CourseStage]
-    let limits: CourseLimits
+    /// 最初のゲージ量。0未満になったら不合格
+    let gauge: Int
+    let cost: CourseCost
 }
 
 /// 曲・譜面・コースの一覧 (library.json)
@@ -107,13 +175,13 @@ struct Library: Decodable {
         guard let url = Bundle.main.url(forResource: "library", withExtension: "json"),
               let data = try? Data(contentsOf: url) else {
             print("library.json が見つかりません")
-            return Library(leadIn: 2, lanes: 4, songs: [], courses: [])
+            return Library(leadIn: 2, lanes: 6, songs: [], courses: [])
         }
         do {
             return try JSONDecoder().decode(Library.self, from: data)
         } catch {
             print("library.json の読み込みに失敗: \(error)")
-            return Library(leadIn: 2, lanes: 4, songs: [], courses: [])
+            return Library(leadIn: 2, lanes: 6, songs: [], courses: [])
         }
     }()
 

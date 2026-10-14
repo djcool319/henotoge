@@ -11,7 +11,7 @@ struct CourseSelectView: View {
             Background()
             ScrollView {
                 VStack(spacing: 14) {
-                    Text("3曲メドレー。GREAT・GOOD・MISS の残り回数が0未満になったら不合格。")
+                    Text("3曲メドレー。判定ごとにゲージが減っていき、0未満になったら不合格。")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                         .frame(maxWidth: .infinity, alignment: .leading)
@@ -24,7 +24,7 @@ struct CourseSelectView: View {
                     }
                 }
                 .padding(16)
-                .frame(maxWidth: 620)
+                .frame(maxWidth: 760)
                 .frame(maxWidth: .infinity)
             }
         }
@@ -85,10 +85,11 @@ struct CourseCard: View {
                 }
             }
 
-            HStack(spacing: 10) {
-                LimitChip(label: "GREAT", value: course.limits.great, color: Judgment.great.color)
-                LimitChip(label: "GOOD", value: course.limits.good, color: Judgment.good.color)
-                LimitChip(label: "MISS", value: course.limits.miss, color: Judgment.miss.color)
+            HStack(spacing: 8) {
+                LimitChip(label: "GAUGE", value: "\(course.gauge)", color: .white)
+                ForEach(Judgment.allCases, id: \.self) { j in
+                    LimitChip(label: j.label, value: "-\(course.cost.cost(for: j))", color: j.color)
+                }
             }
 
             Button(action: onStart) {
@@ -112,13 +113,13 @@ struct CourseCard: View {
 
 struct LimitChip: View {
     let label: String
-    let value: Int?
+    let value: String
     let color: Color
 
     var body: some View {
         VStack(spacing: 2) {
             Text(label).font(.system(size: 10, weight: .heavy)).foregroundStyle(color)
-            Text(value.map { "\($0)" } ?? "∞").font(.system(.headline, design: .monospaced))
+            Text(value).font(.system(.headline, design: .monospaced))
         }
         .frame(maxWidth: .infinity)
         .padding(.vertical, 6)

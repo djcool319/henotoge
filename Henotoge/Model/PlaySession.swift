@@ -47,6 +47,8 @@ struct PlayResult {
     let failed: Bool
     /// 自分でやめた
     let retired: Bool
+    /// 段位ゲージの残り (フリープレイは nil)
+    let gaugeLeft: Int?
 
     var totalCounts: JudgeCounts {
         stages.reduce(JudgeCounts()) { $0 + $1.counts }

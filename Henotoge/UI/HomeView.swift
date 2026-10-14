@@ -5,21 +5,21 @@ struct HomeView: View {
         NavigationStack {
             ZStack {
                 Background()
-                VStack(spacing: 28) {
-                    Spacer()
+                HStack(spacing: 40) {
                     VStack(spacing: 6) {
                         Text("henotoge")
-                            .font(.system(size: 54, weight: .black, design: .rounded))
+                            .font(.system(size: 56, weight: .black, design: .rounded))
                             .foregroundStyle(
                                 LinearGradient(colors: [.cyan, .pink], startPoint: .leading, endPoint: .trailing)
                             )
-                        Text("4 LANE RHYTHM GAME")
+                        Text("6 LANE · 2 FINGER RHYTHM GAME")
                             .font(.caption.bold())
-                            .tracking(4)
+                            .tracking(3)
                             .foregroundStyle(.secondary)
                     }
-                    Spacer()
-                    VStack(spacing: 14) {
+                    .frame(maxWidth: .infinity)
+
+                    VStack(spacing: 10) {
                         NavigationLink {
                             SongSelectView()
                         } label: {
@@ -30,16 +30,22 @@ struct HomeView: View {
                         } label: {
                             MenuButton(title: "段位認定", sub: "\(Library.shared.courses.count)コース", color: .pink)
                         }
-                        NavigationLink {
-                            SettingsView()
-                        } label: {
-                            MenuButton(title: "設定", sub: "ハイスピード・タイミング", color: .gray)
+                        HStack(spacing: 10) {
+                            NavigationLink {
+                                HowToPlayView()
+                            } label: {
+                                MenuButton(title: "遊び方", sub: "ノーツの種類", color: .orange)
+                            }
+                            NavigationLink {
+                                SettingsView()
+                            } label: {
+                                MenuButton(title: "設定", sub: "速さ・タイミング", color: .gray)
+                            }
                         }
                     }
-                    .padding(.horizontal, 28)
-                    Spacer(minLength: 40)
+                    .frame(maxWidth: 380)
                 }
-                .frame(maxWidth: 520)
+                .padding(.horizontal, 40)
             }
             .toolbar(.hidden, for: .navigationBar)
         }
@@ -55,19 +61,19 @@ struct MenuButton: View {
     var body: some View {
         HStack {
             VStack(alignment: .leading, spacing: 2) {
-                Text(title).font(.title3.bold())
+                Text(title).font(.headline)
                 Text(sub).font(.caption).foregroundStyle(.secondary)
             }
-            Spacer()
+            Spacer(minLength: 4)
             Image(systemName: "chevron.right").foregroundStyle(color)
         }
         .foregroundStyle(.white)
-        .padding(.horizontal, 20)
-        .padding(.vertical, 16)
+        .padding(.horizontal, 18)
+        .padding(.vertical, 12)
         .background(
-            RoundedRectangle(cornerRadius: 16)
+            RoundedRectangle(cornerRadius: 14)
                 .fill(Color.white.opacity(0.06))
-                .overlay(RoundedRectangle(cornerRadius: 16).stroke(color.opacity(0.6), lineWidth: 1.5))
+                .overlay(RoundedRectangle(cornerRadius: 14).stroke(color.opacity(0.6), lineWidth: 1.5))
         )
     }
 }
