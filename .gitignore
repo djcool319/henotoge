@@ -1,0 +1,10 @@
+.DS_Store
+*.xcodeproj/
+Henotoge/Info.plist
+build/
+DerivedData/
+Payload/
+*.ipa
+build.log
+__pycache__/
+*.wav
