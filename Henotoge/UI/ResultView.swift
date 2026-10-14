@@ -113,28 +113,37 @@ struct ResultView: View {
 
     private var countsBlock: some View {
         let c = result.totalCounts
-        let cost = result.request.course?.cost
+        let cond = result.request.course?.conditions
         return VStack(spacing: 7) {
             ForEach(Judgment.allCases, id: \.self) { j in
                 HStack {
                     Text(j.label).font(.headline).foregroundStyle(j.color)
-                    if let cost {
-                        Text("-\(cost.cost(for: j))")
-                            .font(.caption.monospacedDigit())
-                            .foregroundStyle(.secondary)
-                    }
+                    Text(j.english).font(.caption2.bold()).foregroundStyle(.secondary)
                     Spacer()
                     Text("\(c[j])").font(.system(.title3, design: .monospaced).bold())
+                    if let limit = cond?.limit(for: j) {
+                        Text("< \(limit)")
+                            .font(.system(.footnote, design: .monospaced))
+                            .foregroundStyle(c[j] >= limit ? Lamp.failed.color : .secondary)
+                            .frame(width: 52, alignment: .leading)
+                    } else if cond != nil {
+                        Text("").frame(width: 52)
+                    }
                 }
             }
-            if let course = result.request.course {
-                Divider().overlay(Color.white.opacity(0.2))
+            Divider().overlay(Color.white.opacity(0.2))
+            HStack {
+                Text("連打").font(.headline).foregroundStyle(Color(red: 1, green: 0.78, blue: 0.1))
+                Spacer()
+                Text("\(result.totalRollHits)").font(.system(.title3, design: .monospaced).bold())
+            }
+            if !result.request.isCourse, let stage = result.stages.first {
                 HStack {
-                    Text("GAUGE").font(.headline)
+                    Text("魂ゲージ").font(.headline)
                     Spacer()
-                    Text("\(result.gaugeLeft ?? 0) / \(course.gauge)")
+                    Text("\(Int((stage.soulGauge * 100).rounded()))%")
                         .font(.system(.title3, design: .monospaced).bold())
-                        .foregroundStyle(result.coursePassed ? Lamp.clear.color : Lamp.failed.color)
+                        .foregroundStyle(stage.soulGauge >= SoulGauge.clearLine ? Lamp.clear.color : Lamp.failed.color)
                 }
             }
         }

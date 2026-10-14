@@ -11,7 +11,7 @@ struct CourseSelectView: View {
             Background()
             ScrollView {
                 VStack(spacing: 14) {
-                    Text("3曲メドレー。判定ごとにゲージが減っていき、0未満になったら不合格。")
+                    Text("3曲メドレー。可(GOOD)と不可(MISS)の回数が、それぞれ決められた数「未満」なら合格。")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                         .frame(maxWidth: .infinity, alignment: .leading)
@@ -86,10 +86,10 @@ struct CourseCard: View {
             }
 
             HStack(spacing: 8) {
-                LimitChip(label: "GAUGE", value: "\(course.gauge)", color: .white)
-                ForEach(Judgment.allCases, id: \.self) { j in
-                    LimitChip(label: j.label, value: "-\(course.cost.cost(for: j))", color: j.color)
-                }
+                LimitChip(label: "可 GOOD", value: course.conditions.good.map { "< \($0)" } ?? "-",
+                          color: Judgment.good.color)
+                LimitChip(label: "不可 MISS", value: course.conditions.miss.map { "< \($0)" } ?? "-",
+                          color: Judgment.miss.color)
             }
 
             Button(action: onStart) {

@@ -7,4 +7,4 @@ Payload/
 *.ipa
 build.log
 __pycache__/
-*.wav
+

@@ -2,13 +2,11 @@ import SpriteKit
 import AVFoundation
 import UIKit
 
-/// プレイ画面 (横画面)。
-/// 6レーンの上からノーツが落ちてきて、判定ラインで取る。
-///   タップ  … 叩く
-///   ホールド … 終わりまで押しっぱなし
-///   スライド … 押したまま帯に沿って指を動かす
-///   ワイプ  … 矢印の向きにこする
-/// どの譜面も、理論上は指2本で取れるように作ってある。
+/// プレイ画面 (太鼓スタイル・横画面)。
+/// 上のレーンを右から左へ音符が流れてきて、判定枠に重なったら下の太鼓を叩く。
+///   太鼓の面 = ドン (赤い音符)、ふち・面の外 = カッ (青い音符)
+///   大音符は叩けばOK (ほぼ同時に2回叩くとボーナス)
+///   黄色い帯は連打、風船は決められた回数ドンを叩いて割る
 final class GameScene: SKScene {
 
     // MARK: - 外部とのやりとり
@@ -17,59 +15,64 @@ final class GameScene: SKScene {
     var onFinish: ((PlayResult) -> Void)?
     var onExit: (() -> Void)?
 
-    // MARK: - ノーツの状態
+    // MARK: - 状態の型
 
     private final class NoteState {
         let note: ChartNote
-        var headDone = false
-        var tailDone = false
-        /// ホールド・スライドを押さえている指
-        var touch: UITouch?
-        /// スライドから指が外れている時間
-        var offTime: Double = 0
-        var container: SKNode?
-        var head: SKNode?
-        var body: SKSpriteNode?
-        var cursor: SKNode?
+        let index: Int
+        var judged = false
+        var node: SKNode?
 
-        init(note: ChartNote) {
+        init(note: ChartNote, index: Int) {
             self.note = note
-        }
-
-        var finished: Bool {
-            note.isLong ? (headDone && tailDone) : headDone
+            self.index = index
         }
     }
 
-    private struct TouchInfo {
-        var x: CGFloat
-        var anchorX: CGFloat
+    private final class RollState {
+        let note: ChartNote
+        var remaining: Int
+        var done = false
+        var node: SKNode?
+        var body: SKSpriteNode?
+        var head: SKNode?
+        var countLabel: SKLabelNode?
+
+        init(note: ChartNote) {
+            self.note = note
+            self.remaining = note.hits
+        }
     }
 
     private enum Phase {
         case loading, playing, paused, between, finished
     }
 
-    // MARK: - 見た目の設定
-
     private enum Palette {
-        static let tap = UIColor(red: 0.35, green: 0.90, blue: 1.00, alpha: 1)
-        static let hold = UIColor(red: 0.45, green: 1.00, blue: 0.60, alpha: 1)
-        static let slide = UIColor(red: 1.00, green: 0.42, blue: 0.85, alpha: 1)
-        static let wipe = UIColor(red: 1.00, green: 0.66, blue: 0.25, alpha: 1)
-        static let background = UIColor(red: 0.04, green: 0.04, blue: 0.08, alpha: 1)
+        static let don = UIColor(red: 0.96, green: 0.28, blue: 0.18, alpha: 1)
+        static let ka = UIColor(red: 0.30, green: 0.75, blue: 0.82, alpha: 1)
+        static let roll = UIColor(red: 1.00, green: 0.78, blue: 0.10, alpha: 1)
+        static let balloon = UIColor(red: 1.00, green: 0.52, blue: 0.12, alpha: 1)
+        static let background = UIColor(red: 0.10, green: 0.06, blue: 0.08, alpha: 1)
+        static let lane = UIColor(red: 0.17, green: 0.16, blue: 0.17, alpha: 1)
+        static let leftBox = UIColor(red: 0.72, green: 0.12, blue: 0.12, alpha: 1)
+        static let skin = UIColor(red: 0.98, green: 0.92, blue: 0.80, alpha: 1)
+        static let rim = UIColor(red: 0.50, green: 0.16, blue: 0.10, alpha: 1)
     }
 
     // MARK: - レイアウト
 
-    private let laneCount: Int
-    private var laneWidth: CGFloat = 0
-    private var laneLeft: CGFloat = 0
-    private var fieldWidth: CGFloat = 0
-    private var judgeY: CGFloat = 0
-    private var spawnY: CGFloat = 0
+    private var laneY: CGFloat = 0
+    private var laneH: CGFloat = 0
+    private var laneStartX: CGFloat = 0
+    private var judgeX: CGFloat = 0
     private var pixelsPerSecond: CGFloat = 0
-    private var noteHeight: CGFloat = 0
+    private var smallR: CGFloat = 0
+    private var bigR: CGFloat = 0
+    private var drumCenter: CGPoint = .zero
+    private var drumR: CGFloat = 0
+    private var faceR: CGFloat = 0
+    private var gaugeRect: CGRect = .zero
     private var didSetup = false
 
     // MARK: - 状態
@@ -77,64 +80,80 @@ final class GameScene: SKScene {
     private var phase: Phase = .loading
     private var stageIndex = 0
     private var player: AVAudioPlayer?
+    private let drumSound = DrumSound()
     private var startHost: CFTimeInterval = 0
     private var pausedRawTime: Double = 0
     private let offset: Double
-    private var lastFrameTime: Double = 0
 
-    private var notes: [NoteState] = []
-    private var active: [NoteState] = []
-    private var spawnIndex = 0
+    private var normals: [NoteState] = []
+    private var rolls: [RollState] = []
+    private var nextNormal = 0
+    private var spawnNormal = 0
+    private var spawnRoll = 0
+    private var bars: [Double] = []
+    private var spawnBar = 0
+    private var barNodes: [(Double, SKNode)] = []
+    private var activeNormals: [NoteState] = []
+    private var activeRolls: [RollState] = []
     private var stageEndTime: Double = 0
-    private var stageJudgments = 0
-    private var touchInfos: [ObjectIdentifier: TouchInfo] = [:]
 
     private var stageCounts = JudgeCounts()
     private var combo = 0
     private var stageMaxCombo = 0
+    private var rollHits = 0
+    private var soul: Double = 0
+    private var soulUnit: Double = 0
     private var stageResults: [StageResult] = []
 
-    /// 段位ゲージ (フリープレイは nil)
-    private var gauge: Int?
-    private let gaugeMax: Int
+    private var lastBig: NoteState?
+    private var lastBigTime: Double = -10
+    private var lastBigBonus = false
 
     // MARK: - ノード
 
     private let laneLayer = SKNode()
-    private let gaugeLayer = SKNode()
-    private let noteCrop = SKCropNode()
+    private let barLayer = SKNode()
     private let noteLayer = SKNode()
     private let effectLayer = SKNode()
+    private let drumLayer = SKNode()
     private let hudLayer = SKNode()
 
-    private var beams: [SKSpriteNode] = []
-    private var textureCache: [String: SKTexture] = [:]
-    private var glowTexture: SKTexture?
+    private var textures: [String: SKTexture] = [:]
+    private var judgeRing = SKShapeNode()
+    private var faceFlash: [SKShapeNode] = []   // 左, 右
+    private var rimFlash: [SKShapeNode] = []    // 左, 右
 
     private let gaugeFill = SKSpriteNode()
     private let gaugeLabel = SKLabelNode(fontNamed: "AvenirNext-Heavy")
-    private let gaugeCaption = SKLabelNode(fontNamed: "AvenirNext-Bold")
 
     private let titleLabel = SKLabelNode(fontNamed: "HiraginoSans-W6")
-    private let subLabel = SKLabelNode(fontNamed: "AvenirNext-DemiBold")
+    private let subLabel = SKLabelNode(fontNamed: "AvenirNext-Bold")
     private let scoreLabel = SKLabelNode(fontNamed: "AvenirNext-Heavy")
-    private let scoreCaption = SKLabelNode(fontNamed: "AvenirNext-DemiBold")
-    private let comboLabel = SKLabelNode(fontNamed: "AvenirNext-HeavyItalic")
-    private let comboCaption = SKLabelNode(fontNamed: "AvenirNext-DemiBold")
-    private let judgeLabel = SKLabelNode(fontNamed: "AvenirNext-HeavyItalic")
+    private let comboLabel = SKLabelNode(fontNamed: "AvenirNext-Heavy")
+    private let comboCaption = SKLabelNode(fontNamed: "HiraginoSans-W6")
+    private let judgeLabel = SKLabelNode(fontNamed: "HiraginoSans-W8")
     private let bannerLabel = SKLabelNode(fontNamed: "HiraginoSans-W6")
     private let bannerSub = SKLabelNode(fontNamed: "HiraginoSans-W6")
     private let pauseButton = SKLabelNode(fontNamed: "AvenirNext-Heavy")
     private var pauseMenu: SKNode?
 
+    /// 太鼓の左右のパネル (段位なら 可・不可 の残り、フリーなら連打など)
+    private struct Panel {
+        let root: SKNode
+        let title: SKLabelNode
+        let value: SKLabelNode
+        let barBack: SKSpriteNode
+        let bar: SKSpriteNode
+        let width: CGFloat
+    }
+    private var leftPanel: Panel?
+    private var rightPanel: Panel?
+
     // MARK: - 初期化
 
     init(size: CGSize, request: PlayRequest) {
         self.request = request
-        self.laneCount = max(2, Library.shared.lanes)
         self.offset = Double(GameSettings.offsetMs) / 1000.0
-        self.gauge = request.course?.gauge
-        self.gaugeMax = max(1, request.course?.gauge ?? 1)
         super.init(size: size)
         backgroundColor = Palette.background
     }
@@ -159,9 +178,10 @@ final class GameScene: SKScene {
 
     /// 表示直後は画面サイズが 0 のことがあるので、ちゃんとした大きさになってから組み立てる
     private func setupIfReady() {
-        guard !didSetup, view != nil, size.width >= 200, size.height >= 150 else { return }
+        guard !didSetup, view != nil, size.width >= 300, size.height >= 200 else { return }
         didSetup = true
         setupLayout()
+        setupDrum()
         setupHUD()
         NotificationCenter.default.addObserver(self, selector: #selector(appWillResignActive),
                                                name: UIApplication.willResignActiveNotification, object: nil)
@@ -176,179 +196,250 @@ final class GameScene: SKScene {
     func shutdown() {
         player?.stop()
         player = nil
+        drumSound.stop()
         phase = .finished
         removeAllActions()
     }
 
     // MARK: - レイアウト
 
-    private func laneX(_ lane: Double) -> CGFloat {
-        laneLeft + laneWidth * CGFloat(lane)
-    }
-
-    private func spanCenterX(left: Double, width: Double) -> CGFloat {
-        laneX(left + width / 2)
-    }
-
-    private var fieldCenterX: CGFloat { laneLeft + fieldWidth / 2 }
-    private var rightPanelX: CGFloat { (laneLeft + fieldWidth + size.width) / 2 }
-    private var leftPanelX: CGFloat { laneLeft / 2 }
-
     private func setupLayout() {
-        fieldWidth = min(size.width * 0.62, 760)
-        laneWidth = fieldWidth / CGFloat(laneCount)
-        laneLeft = (size.width - fieldWidth) / 2
-        judgeY = max(54, size.height * 0.16)
-        spawnY = size.height + 30
-        pixelsPerSecond = size.height * 0.4 * CGFloat(GameSettings.hiSpeed)
-        noteHeight = max(14, min(24, size.height * 0.05))
+        let W = size.width
+        let H = size.height
+        laneH = max(64, min(H * 0.2, 120))
+        laneY = H * 0.66
+        laneStartX = W * 0.16
+        judgeX = laneStartX + laneH * 0.7
+        smallR = laneH * 0.26
+        bigR = laneH * 0.39
 
-        addChild(laneLayer)
-        addChild(gaugeLayer)
-        addChild(noteCrop)
-        addChild(effectLayer)
-        addChild(hudLayer)
+        for layer in [laneLayer, barLayer, noteLayer, effectLayer, drumLayer, hudLayer] {
+            addChild(layer)
+        }
         laneLayer.zPosition = 0
-        gaugeLayer.zPosition = 5
-        noteCrop.zPosition = 10
+        barLayer.zPosition = 5
+        noteLayer.zPosition = 10
         effectLayer.zPosition = 20
+        drumLayer.zPosition = 15
         hudLayer.zPosition = 30
 
-        // 判定ラインより少し下で切って、通り過ぎたノーツは消えて見えるようにする
-        let maskHeight = size.height - judgeY + noteHeight + 40
-        let mask = SKSpriteNode(color: .white, size: CGSize(width: fieldWidth + 40, height: maskHeight))
-        mask.anchorPoint = CGPoint(x: 0.5, y: 0)
-        mask.position = CGPoint(x: fieldCenterX, y: judgeY - noteHeight)
-        noteCrop.maskNode = mask
-        noteCrop.addChild(noteLayer)
-
-        // レーンの背景
-        for i in 0..<laneCount {
-            let shade: CGFloat = i % 2 == 0 ? 0.07 : 0.095
-            let bg = SKSpriteNode(color: UIColor(white: shade, alpha: 1),
-                                  size: CGSize(width: laneWidth - 1, height: size.height))
-            bg.anchorPoint = CGPoint(x: 0.5, y: 0)
-            bg.position = CGPoint(x: laneX(Double(i) + 0.5), y: 0)
-            laneLayer.addChild(bg)
-
-            let beam = SKSpriteNode(texture: beamTexture(), size: CGSize(width: laneWidth - 1, height: size.height * 0.5))
-            beam.anchorPoint = CGPoint(x: 0.5, y: 0)
-            beam.position = CGPoint(x: laneX(Double(i) + 0.5), y: judgeY)
-            beam.alpha = 0
-            beam.blendMode = .add
-            laneLayer.addChild(beam)
-            beams.append(beam)
-        }
-
-        // 真ん中の区切りと外枠
-        for (x, a) in [(laneLeft, 0.35), (laneLeft + fieldWidth, 0.35), (fieldCenterX, 0.18)] {
-            let edge = SKSpriteNode(color: UIColor(white: 1, alpha: a), size: CGSize(width: 2, height: size.height))
-            edge.anchorPoint = CGPoint(x: 0.5, y: 0)
-            edge.position = CGPoint(x: x, y: 0)
+        // レーン
+        let lane = SKSpriteNode(color: Palette.lane, size: CGSize(width: W - laneStartX, height: laneH))
+        lane.anchorPoint = CGPoint(x: 0, y: 0.5)
+        lane.position = CGPoint(x: laneStartX, y: laneY)
+        laneLayer.addChild(lane)
+        for dy in [-laneH / 2, laneH / 2] {
+            let edge = SKSpriteNode(color: UIColor(white: 0.85, alpha: 1), size: CGSize(width: W, height: 3))
+            edge.anchorPoint = CGPoint(x: 0, y: 0.5)
+            edge.position = CGPoint(x: 0, y: laneY + dy)
             laneLayer.addChild(edge)
         }
 
-        // 判定ライン
-        let glow = SKSpriteNode(color: UIColor(red: 1, green: 0.5, blue: 0.85, alpha: 0.35),
-                                size: CGSize(width: fieldWidth, height: 12))
-        glow.position = CGPoint(x: fieldCenterX, y: judgeY)
-        laneLayer.addChild(glow)
-        let line = SKSpriteNode(color: .white, size: CGSize(width: fieldWidth, height: 3))
-        line.position = CGPoint(x: fieldCenterX, y: judgeY)
-        laneLayer.addChild(line)
+        // 判定枠
+        let inner = SKShapeNode(circleOfRadius: smallR * 1.02)
+        inner.strokeColor = UIColor(white: 1, alpha: 0.55)
+        inner.lineWidth = 2
+        inner.fillColor = UIColor(white: 0.08, alpha: 1)
+        inner.position = CGPoint(x: judgeX, y: laneY)
+        laneLayer.addChild(inner)
+        judgeRing = SKShapeNode(circleOfRadius: bigR * 1.0)
+        judgeRing.strokeColor = UIColor(white: 1, alpha: 0.35)
+        judgeRing.lineWidth = 2
+        judgeRing.position = CGPoint(x: judgeX, y: laneY)
+        laneLayer.addChild(judgeRing)
 
-        let pad = SKSpriteNode(color: UIColor(white: 0, alpha: 0.4), size: CGSize(width: fieldWidth, height: judgeY - 2))
-        pad.anchorPoint = CGPoint(x: 0.5, y: 0)
-        pad.position = CGPoint(x: fieldCenterX, y: 0)
-        laneLayer.addChild(pad)
+        // 左の箱 (コンボ表示)
+        let box = SKSpriteNode(color: Palette.leftBox, size: CGSize(width: laneStartX, height: laneH))
+        box.anchorPoint = CGPoint(x: 0, y: 0.5)
+        box.position = CGPoint(x: 0, y: laneY)
+        laneLayer.addChild(box)
+        let mini = SKShapeNode(circleOfRadius: laneH * 0.36)
+        mini.fillColor = Palette.skin
+        mini.strokeColor = Palette.rim
+        mini.lineWidth = laneH * 0.08
+        mini.position = CGPoint(x: laneStartX * 0.6, y: laneY)
+        laneLayer.addChild(mini)
 
-        // 段位ゲージ (譜面の後ろ)
-        if gauge != nil {
-            gaugeFill.anchorPoint = CGPoint(x: 0.5, y: 0)
-            gaugeFill.position = CGPoint(x: fieldCenterX, y: judgeY)
-            gaugeFill.size = CGSize(width: fieldWidth, height: size.height - judgeY)
-            gaugeFill.alpha = 0.16
-            gaugeLayer.addChild(gaugeFill)
+        // 魂ゲージ
+        let gx = judgeX - bigR
+        gaugeRect = CGRect(x: gx, y: laneY + laneH / 2 + 10, width: W - gx - 16, height: max(12, H * 0.035))
+        let back = SKSpriteNode(color: UIColor(white: 0.12, alpha: 1), size: gaugeRect.size)
+        back.anchorPoint = .zero
+        back.position = gaugeRect.origin
+        laneLayer.addChild(back)
+        gaugeFill.anchorPoint = .zero
+        gaugeFill.position = gaugeRect.origin
+        gaugeFill.size = CGSize(width: 0, height: gaugeRect.height)
+        laneLayer.addChild(gaugeFill)
+        let clearX = gaugeRect.minX + gaugeRect.width * CGFloat(SoulGauge.clearLine)
+        let marker = SKSpriteNode(color: .white, size: CGSize(width: 2, height: gaugeRect.height + 6))
+        marker.position = CGPoint(x: clearX, y: gaugeRect.midY)
+        laneLayer.addChild(marker)
+        gaugeLabel.fontSize = 10
+        gaugeLabel.text = "CLEAR"
+        gaugeLabel.fontColor = UIColor(white: 1, alpha: 0.8)
+        gaugeLabel.position = CGPoint(x: clearX + 22, y: gaugeRect.maxY + 3)
+        laneLayer.addChild(gaugeLabel)
 
-            gaugeLabel.fontSize = min(size.height * 0.32, 150)
-            gaugeLabel.verticalAlignmentMode = .center
-            gaugeLabel.position = CGPoint(x: fieldCenterX, y: (size.height + judgeY) / 2 + 10)
-            gaugeLabel.alpha = 0.2
-            gaugeLayer.addChild(gaugeLabel)
+        pixelsPerSecond = (W - judgeX)
+    }
 
-            gaugeCaption.fontSize = 14
-            gaugeCaption.text = "GAUGE"
-            gaugeCaption.position = CGPoint(x: fieldCenterX, y: gaugeLabel.position.y - gaugeLabel.fontSize * 0.55 - 6)
-            gaugeCaption.alpha = 0.3
-            gaugeLayer.addChild(gaugeCaption)
+    private func setupDrum() {
+        let W = size.width
+        let H = size.height
+        let bottomTop = laneY - laneH / 2 - 8
+        drumR = max(50, min(bottomTop * 0.47, W * 0.17))
+        drumCenter = CGPoint(x: W / 2, y: bottomTop / 2)
+        faceR = drumR * 0.76
+
+        let rim = SKShapeNode(circleOfRadius: drumR)
+        rim.fillColor = Palette.rim
+        rim.strokeColor = .black
+        rim.lineWidth = 4
+        rim.position = drumCenter
+        drumLayer.addChild(rim)
+
+        let face = SKShapeNode(circleOfRadius: faceR)
+        face.fillColor = Palette.skin
+        face.strokeColor = UIColor(red: 0.35, green: 0.2, blue: 0.12, alpha: 1)
+        face.lineWidth = 3
+        face.position = drumCenter
+        drumLayer.addChild(face)
+
+        // 光る部分 (左右)
+        for left in [true, false] {
+            let start: CGFloat = left ? .pi / 2 : -.pi / 2
+            let end: CGFloat = left ? .pi * 1.5 : .pi / 2
+
+            let fp = CGMutablePath()
+            fp.move(to: .zero)
+            fp.addArc(center: .zero, radius: faceR - 2, startAngle: start, endAngle: end, clockwise: false)
+            fp.closeSubpath()
+            let f = SKShapeNode(path: fp)
+            f.fillColor = Palette.don.withAlphaComponent(0.85)
+            f.strokeColor = .clear
+            f.position = drumCenter
+            f.alpha = 0
+            drumLayer.addChild(f)
+            faceFlash.append(f)
+
+            let rp = CGMutablePath()
+            rp.addArc(center: .zero, radius: drumR - 2, startAngle: start, endAngle: end, clockwise: false)
+            rp.addArc(center: .zero, radius: faceR + 2, startAngle: end, endAngle: start, clockwise: true)
+            rp.closeSubpath()
+            let r = SKShapeNode(path: rp)
+            r.fillColor = Palette.ka.withAlphaComponent(0.9)
+            r.strokeColor = .clear
+            r.position = drumCenter
+            r.alpha = 0
+            drumLayer.addChild(r)
+            rimFlash.append(r)
         }
 
-        glowTexture = makeGlowTexture()
+        let hint = SKLabelNode(fontNamed: "HiraginoSans-W6")
+        hint.text = "ドン"
+        hint.fontSize = 13
+        hint.fontColor = UIColor(white: 0.3, alpha: 0.6)
+        hint.verticalAlignmentMode = .center
+        hint.position = drumCenter
+        drumLayer.addChild(hint)
+
+        // 左右のパネル
+        let pw = min(W * 0.22, drumCenter.x - drumR - 30)
+        leftPanel = makePanel(centerX: (drumCenter.x - drumR) / 2, width: pw)
+        rightPanel = makePanel(centerX: (W + drumCenter.x + drumR) / 2, width: pw)
+        _ = H
+    }
+
+    private func makePanel(centerX: CGFloat, width: CGFloat) -> Panel {
+        let root = SKNode()
+        root.position = CGPoint(x: centerX, y: drumCenter.y)
+        let bg = SKSpriteNode(color: UIColor(white: 0, alpha: 0.35), size: CGSize(width: width, height: 86))
+        root.addChild(bg)
+        let title = SKLabelNode(fontNamed: "HiraginoSans-W6")
+        title.fontSize = 14
+        title.position = CGPoint(x: 0, y: 18)
+        root.addChild(title)
+        let value = SKLabelNode(fontNamed: "AvenirNext-Heavy")
+        value.fontSize = 24
+        value.position = CGPoint(x: 0, y: -10)
+        root.addChild(value)
+        let barBack = SKSpriteNode(color: UIColor(white: 1, alpha: 0.12), size: CGSize(width: width - 20, height: 8))
+        barBack.anchorPoint = CGPoint(x: 0, y: 0.5)
+        barBack.position = CGPoint(x: -(width - 20) / 2, y: -30)
+        root.addChild(barBack)
+        let bar = SKSpriteNode(color: .white, size: CGSize(width: width - 20, height: 8))
+        bar.anchorPoint = CGPoint(x: 0, y: 0.5)
+        bar.position = barBack.position
+        root.addChild(bar)
+        hudLayer.addChild(root)
+        return Panel(root: root, title: title, value: value, barBack: barBack, bar: bar, width: width - 20)
     }
 
     private func setupHUD() {
-        let panelWidth = max(80, laneLeft - 24)
-        let top = size.height - 26
+        let W = size.width
+        let H = size.height
+        let top = H - 22
 
         pauseButton.text = "II"
         pauseButton.fontSize = 22
         pauseButton.fontColor = UIColor(white: 1, alpha: 0.85)
         pauseButton.verticalAlignmentMode = .center
-        pauseButton.position = CGPoint(x: laneLeft + fieldWidth + 28, y: top)
+        pauseButton.position = CGPoint(x: max(40, laneStartX * 0.35), y: top)
         hudLayer.addChild(pauseButton)
 
-        titleLabel.fontSize = 15
-        titleLabel.numberOfLines = 2
-        titleLabel.preferredMaxLayoutWidth = panelWidth
-        titleLabel.verticalAlignmentMode = .top
-        titleLabel.position = CGPoint(x: leftPanelX, y: top + 8)
+        titleLabel.fontSize = 16
+        titleLabel.horizontalAlignmentMode = .right
+        titleLabel.verticalAlignmentMode = .center
+        titleLabel.position = CGPoint(x: W - 20, y: top)
         hudLayer.addChild(titleLabel)
 
         subLabel.fontSize = 12
-        subLabel.verticalAlignmentMode = .top
-        subLabel.position = CGPoint(x: leftPanelX, y: top - 34)
+        subLabel.horizontalAlignmentMode = .right
+        subLabel.verticalAlignmentMode = .center
+        subLabel.position = CGPoint(x: W - 20, y: top - 18)
         hudLayer.addChild(subLabel)
 
-        scoreCaption.text = "SCORE"
-        scoreCaption.fontSize = 11
-        scoreCaption.fontColor = UIColor(white: 1, alpha: 0.6)
-        scoreCaption.position = CGPoint(x: leftPanelX, y: size.height * 0.42)
-        hudLayer.addChild(scoreCaption)
-
-        scoreLabel.fontSize = min(26, panelWidth / 5)
-        scoreLabel.position = CGPoint(x: leftPanelX, y: size.height * 0.42 - 30)
+        scoreLabel.fontSize = 20
+        scoreLabel.horizontalAlignmentMode = .left
+        scoreLabel.verticalAlignmentMode = .center
+        scoreLabel.fontColor = UIColor(white: 1, alpha: 0.95)
+        scoreLabel.position = CGPoint(x: pauseButton.position.x + 34, y: top)
         hudLayer.addChild(scoreLabel)
 
-        comboLabel.fontSize = min(48, max(28, (size.width - laneLeft - fieldWidth) / 3))
-        comboLabel.fontColor = UIColor(white: 1, alpha: 0.95)
-        comboLabel.position = CGPoint(x: rightPanelX, y: size.height * 0.45)
+        comboLabel.fontSize = laneH * 0.36
+        comboLabel.fontColor = UIColor(red: 0.2, green: 0.1, blue: 0.05, alpha: 1)
+        comboLabel.verticalAlignmentMode = .center
+        comboLabel.position = CGPoint(x: laneStartX * 0.6, y: laneY + 2)
         comboLabel.alpha = 0
         hudLayer.addChild(comboLabel)
 
-        comboCaption.text = "COMBO"
-        comboCaption.fontSize = 12
-        comboCaption.fontColor = UIColor(white: 1, alpha: 0.6)
-        comboCaption.position = CGPoint(x: rightPanelX, y: size.height * 0.45 - 20)
+        comboCaption.text = "コンボ"
+        comboCaption.fontSize = 9
+        comboCaption.fontColor = UIColor(red: 0.3, green: 0.15, blue: 0.1, alpha: 1)
+        comboCaption.position = CGPoint(x: laneStartX * 0.6, y: laneY - laneH * 0.26)
         comboCaption.alpha = 0
         hudLayer.addChild(comboCaption)
 
-        judgeLabel.fontSize = 26
-        judgeLabel.position = CGPoint(x: fieldCenterX, y: judgeY + 70)
+        judgeLabel.fontSize = laneH * 0.3
+        judgeLabel.verticalAlignmentMode = .center
+        judgeLabel.position = CGPoint(x: judgeX, y: laneY + laneH * 0.62)
         judgeLabel.alpha = 0
         hudLayer.addChild(judgeLabel)
 
-        bannerLabel.fontSize = 32
-        bannerLabel.position = CGPoint(x: fieldCenterX, y: size.height * 0.6)
+        bannerLabel.fontSize = 30
+        bannerLabel.position = CGPoint(x: (laneStartX + W) / 2, y: laneY - 10)
         bannerLabel.alpha = 0
         hudLayer.addChild(bannerLabel)
 
-        bannerSub.fontSize = 15
+        bannerSub.fontSize = 14
         bannerSub.fontColor = UIColor(white: 1, alpha: 0.85)
-        bannerSub.position = CGPoint(x: fieldCenterX, y: size.height * 0.6 - 30)
+        bannerSub.position = CGPoint(x: bannerLabel.position.x, y: bannerLabel.position.y - 26)
         bannerSub.alpha = 0
         hudLayer.addChild(bannerSub)
 
-        updateGaugeDisplay(animated: false)
+        updatePanels()
+        updateGauge()
     }
 
     // MARK: - ステージ進行
@@ -358,33 +449,60 @@ final class GameScene: SKScene {
         let stage = request.stages[index]
 
         noteLayer.removeAllChildren()
+        barLayer.removeAllChildren()
         effectLayer.removeAllChildren()
-        notes = stage.chart.notes.map { NoteState(note: $0) }
-        active = []
-        spawnIndex = 0
+        normals = []
+        rolls = []
+        var i = 0
+        for n in stage.chart.notes {
+            if n.isNormal {
+                normals.append(NoteState(note: n, index: i))
+                i += 1
+            } else if n.isRoll {
+                rolls.append(RollState(note: n))
+            }
+        }
+        nextNormal = 0
+        spawnNormal = 0
+        spawnRoll = 0
+        activeNormals = []
+        activeRolls = []
+        bars = stage.song.bars.map { Double($0) / 1000.0 }
+        spawnBar = 0
+        barNodes = []
+
         stageCounts = JudgeCounts()
-        stageJudgments = stage.chart.totalJudgments
         combo = 0
         stageMaxCombo = 0
+        rollHits = 0
+        soul = 0
+        let n = max(1, normals.count)
+        soulUnit = 1.0 / (Double(n) * 0.85)
+        lastBig = nil
+
+        pixelsPerSecond = (size.width - judgeX) * CGFloat(stage.song.bpm) / 240.0 * CGFloat(GameSettings.scroll) * 0.9
 
         let lastNote = stage.chart.notes.map { max($0.time, $0.end) }.max() ?? 0
-        stageEndTime = max(lastNote + 1.2, min(stage.song.duration, lastNote + 4.0))
+        stageEndTime = max(lastNote + 1.2, min(stage.song.duration, lastNote + 3.0))
 
         titleLabel.text = stage.song.title
         if let course = request.course {
-            subLabel.text = "\(course.name)  \(index + 1)/\(request.stages.count)"
+            subLabel.text = "\(course.name)  \(index + 1)/\(request.stages.count)  \(stage.chart.difficulty.rawValue) Lv.\(stage.chart.level)"
         } else {
-            subLabel.text = "\(stage.chart.difficulty.rawValue) Lv.\(stage.chart.level)"
+            subLabel.text = "\(stage.chart.difficulty.rawValue)  Lv.\(stage.chart.level)"
         }
         subLabel.fontColor = UIColor(stage.chart.difficulty.color)
         updateScoreLabel()
         updateComboLabel()
+        updateGauge()
+        updatePanels()
 
         player?.stop()
         player = nil
         if let url = stage.song.audioURL {
             do {
                 let p = try AVAudioPlayer(contentsOf: url)
+                p.volume = 0.85
                 p.prepareToPlay()
                 player = p
             } catch {
@@ -400,7 +518,6 @@ final class GameScene: SKScene {
 
         let delay = 1.2
         startHost = CACurrentMediaTime() + delay
-        lastFrameTime = -delay
         if let p = player {
             p.play(atTime: p.deviceCurrentTime + delay)
         }
@@ -411,7 +528,7 @@ final class GameScene: SKScene {
         CACurrentMediaTime() - startHost
     }
 
-    /// 判定とノーツ位置の基準になる時刻 (秒)
+    /// 判定と音符の位置の基準になる時刻 (秒)
     private func songTime() -> Double {
         rawTime() - offset
     }
@@ -419,8 +536,9 @@ final class GameScene: SKScene {
     private func endStage(completed: Bool) {
         let stage = request.stages[stageIndex]
         let result = StageResult(song: stage.song, chart: stage.chart, counts: stageCounts,
-                                 score: stageCounts.score(totalNotes: stageJudgments),
-                                 maxCombo: stageMaxCombo, completed: completed)
+                                 score: stageCounts.score(totalNotes: normals.count),
+                                 maxCombo: stageMaxCombo, rollHits: rollHits, soulGauge: soul,
+                                 completed: completed)
         stageResults.append(result)
     }
 
@@ -429,12 +547,14 @@ final class GameScene: SKScene {
         let isLast = stageIndex + 1 >= request.stages.count
         let c = stageCounts
         let label: String
-        if c.miss == 0 && c.great == 0 && c.good == 0 {
-            label = "ALL PERFECT"
+        if c.miss == 0 && c.good == 0 {
+            label = "全良!"
         } else if c.miss == 0 {
-            label = "FULL COMBO"
-        } else {
+            label = "フルコンボ!"
+        } else if request.isCourse {
             label = isLast ? "FINISH" : "STAGE CLEAR"
+        } else {
+            label = soul >= SoulGauge.clearLine ? "クリア!" : "クリア失敗…"
         }
 
         if isLast {
@@ -458,8 +578,8 @@ final class GameScene: SKScene {
         phase = .finished
         player?.setVolume(0, fadeDuration: 0.6)
         endStage(completed: false)
-        for n in active { n.container?.run(.fadeOut(withDuration: 0.4)) }
-        showBanner("FAILED", sub: "段位認定 不合格", hold: 1.6, color: Judgment.miss.uiColor)
+        noteLayer.run(.fadeAlpha(to: 0.3, duration: 0.4))
+        showBanner("不合格…", sub: "条件を満たせませんでした", hold: 1.6, color: Judgment.miss.uiColor)
         run(.sequence([.wait(forDuration: 2.2), .run { [weak self] in
             self?.player?.stop()
             self?.deliver(failed: true, retired: false)
@@ -468,8 +588,7 @@ final class GameScene: SKScene {
 
     private func deliver(failed: Bool, retired: Bool) {
         player?.stop()
-        let result = PlayResult(request: request, stages: stageResults, failed: failed, retired: retired,
-                                gaugeLeft: gauge.map { max(0, $0) })
+        let result = PlayResult(request: request, stages: stageResults, failed: failed, retired: retired)
         onFinish?(result)
     }
 
@@ -478,362 +597,313 @@ final class GameScene: SKScene {
     override func update(_ currentTime: TimeInterval) {
         guard phase == .playing else { return }
         let t = songTime()
-        let frameDt = max(0, min(0.1, t - lastFrameTime))
-        lastFrameTime = t
+        let lookahead = Double((size.width - judgeX + bigR * 2) / pixelsPerSecond)
 
         // 出現
-        let lookahead = Double((spawnY - judgeY) / pixelsPerSecond) + 0.05
-        while spawnIndex < notes.count && notes[spawnIndex].note.time - t <= lookahead {
-            spawn(notes[spawnIndex])
-            spawnIndex += 1
+        while spawnNormal < normals.count && normals[spawnNormal].note.time - t <= lookahead {
+            spawn(normals[spawnNormal])
+            spawnNormal += 1
+        }
+        while spawnRoll < rolls.count && rolls[spawnRoll].note.time - t <= lookahead {
+            spawn(rolls[spawnRoll])
+            spawnRoll += 1
+        }
+        while spawnBar < bars.count && bars[spawnBar] - t <= lookahead {
+            let line = SKSpriteNode(color: UIColor(white: 1, alpha: 0.45), size: CGSize(width: 2, height: laneH))
+            line.position = CGPoint(x: size.width + 10, y: laneY)
+            barLayer.addChild(line)
+            barNodes.append((bars[spawnBar], line))
+            spawnBar += 1
         }
 
-        for n in active {
-            if phase != .playing { return }
-            let note = n.note
-
-            // 見逃し
-            if !n.headDone && t - note.time > JudgeWindow.good {
-                judgeHead(n, .miss)
+        // 見逃し
+        while nextNormal < normals.count {
+            let n = normals[nextNormal]
+            if n.judged {
+                nextNormal += 1
                 continue
             }
-
-            // ホールド・スライド中
-            if note.isLong && n.headDone && !n.tailDone {
-                if let touch = n.touch {
-                    if note.kind == .slide, let info = touchInfos[ObjectIdentifier(touch)] {
-                        let lp = lanePosition(info.x)
-                        let left = note.lanePosition(at: t)
-                        let inside = lp >= left - 0.6 && lp <= left + note.width + 0.6
-                        n.offTime = inside ? 0 : n.offTime + frameDt
-                        if n.offTime > 0.2 {
-                            judgeTail(n, .miss)
-                            continue
-                        }
-                    }
-                    if t >= note.end {
-                        judgeTail(n, .perfect)
-                        continue
-                    }
-                    lightBeams(left: note.lanePosition(at: t), width: note.width)
-                } else if t >= note.end {
-                    judgeTail(n, .perfect)
-                    continue
-                }
+            if t - n.note.time > JudgeWindow.good {
+                apply(.miss, to: n, t: t)
+                nextNormal += 1
+                if phase != .playing { return }
+            } else {
+                break
             }
-
-            updatePosition(n, t: t)
         }
 
-        active.removeAll { $0.finished }
+        // 移動
+        for n in activeNormals {
+            n.node?.position.x = xFor(n.note.time, t)
+        }
+        activeNormals.removeAll { $0.judged }
 
-        if spawnIndex >= notes.count && active.isEmpty && t >= stageEndTime {
+        for r in activeRolls {
+            updateRoll(r, t: t)
+        }
+        activeRolls.removeAll { $0.done }
+
+        for (time, node) in barNodes {
+            node.position.x = xFor(time, t)
+        }
+        barNodes.removeAll { pair in
+            if xFor(pair.0, t) < laneStartX {
+                pair.1.removeFromParent()
+                return true
+            }
+            return false
+        }
+
+        if nextNormal >= normals.count && activeRolls.isEmpty && spawnRoll >= rolls.count && t >= stageEndTime {
             finishStage()
         }
     }
 
-    private func updatePosition(_ n: NoteState, t: Double) {
-        guard let container = n.container else { return }
-        let note = n.note
-        container.position.y = judgeY + CGFloat(note.time - t) * pixelsPerSecond
+    private func xFor(_ time: Double, _ t: Double) -> CGFloat {
+        judgeX + CGFloat(time - t) * pixelsPerSecond
+    }
 
-        guard n.headDone, note.isLong, !n.tailDone else { return }
-        let held = CGFloat(max(0, t - note.time)) * pixelsPerSecond
-        // 押さえている間は頭を判定ラインに留める
-        if let head = n.head {
-            head.position.y = held
-            if note.kind == .slide {
-                head.position.x = spanCenterX(left: note.lanePosition(at: t), width: note.width)
+    private func updateRoll(_ r: RollState, t: Double) {
+        guard let node = r.node else {
+            r.done = true
+            return
+        }
+        let note = r.note
+        if note.kind == .balloon {
+            if t >= note.time && t <= note.end {
+                // 風船は判定枠で止まる
+                node.position.x = judgeX
+            } else {
+                node.position.x = xFor(note.time, t)
             }
+            if t > note.end {
+                node.run(.sequence([.fadeOut(withDuration: 0.2), .removeFromParent()]))
+                r.node = nil
+                r.done = true
+            }
+            return
         }
-        if note.kind == .hold, let body = n.body {
-            body.position.y = held
-            body.size.height = max(0, CGFloat(note.end - max(t, note.time)) * pixelsPerSecond)
-        }
-        if let cursor = n.cursor {
-            cursor.position = CGPoint(x: spanCenterX(left: note.lanePosition(at: t), width: note.width), y: judgeY)
+        node.position.x = xFor(note.time, t)
+        if xFor(note.end, t) < laneStartX - bigR {
+            node.removeFromParent()
+            r.node = nil
+            r.done = true
         }
     }
 
-    // MARK: - ノーツの表示
-
-    private func noteSize(width: Double, scale: CGFloat = 1) -> CGSize {
-        CGSize(width: max(10, laneWidth * CGFloat(width) - 6), height: noteHeight * scale)
-    }
+    // MARK: - 音符の表示
 
     private func spawn(_ n: NoteState) {
         let note = n.note
+        let r = note.isBig ? bigR : smallR
+        let sprite = SKSpriteNode(texture: noteTexture(don: note.isDon, big: note.isBig),
+                                  size: CGSize(width: r * 2, height: r * 2))
+        sprite.position = CGPoint(x: size.width + r, y: laneY)
+        // 先に来る音符ほど手前に
+        sprite.zPosition = CGFloat(100_000 - n.index) * 0.0001
+        noteLayer.addChild(sprite)
+        n.node = sprite
+        activeNormals.append(n)
+    }
+
+    private func spawn(_ r: RollState) {
+        let note = r.note
         let container = SKNode()
-        container.position = CGPoint(x: 0, y: spawnY)
-        let cx = spanCenterX(left: note.lane, width: note.width)
+        container.position = CGPoint(x: size.width + bigR, y: laneY)
+        container.zPosition = -1
 
-        switch note.kind {
-        case .tap:
-            let head = SKSpriteNode(texture: texture(for: .tap, width: note.width), size: noteSize(width: note.width))
-            head.position = CGPoint(x: cx, y: 0)
+        if note.kind == .balloon {
+            let head = SKSpriteNode(texture: balloonTexture(), size: CGSize(width: smallR * 2.2, height: smallR * 2.2))
             container.addChild(head)
-            n.head = head
-
-        case .wipe:
-            let head = SKSpriteNode(texture: texture(for: .wipe, width: note.width, dir: note.dir),
-                                    size: noteSize(width: note.width, scale: 1.35))
-            head.position = CGPoint(x: cx, y: 0)
-            container.addChild(head)
-            n.head = head
-
-        case .hold:
+            let label = SKLabelNode(fontNamed: "AvenirNext-Heavy")
+            label.fontSize = smallR * 0.9
+            label.fontColor = .white
+            label.verticalAlignmentMode = .center
+            label.text = "\(r.remaining)"
+            label.zPosition = 1
+            container.addChild(label)
+            r.countLabel = label
+            r.head = head
+        } else {
+            let rad = note.kind == .bigRoll ? bigR : smallR
             let length = CGFloat(note.end - note.time) * pixelsPerSecond
-            let body = SKSpriteNode(color: Palette.hold.withAlphaComponent(0.32),
-                                    size: CGSize(width: max(6, laneWidth * CGFloat(note.width) - 18), height: length))
-            body.anchorPoint = CGPoint(x: 0.5, y: 0)
-            body.position = CGPoint(x: cx, y: 0)
+            let body = SKSpriteNode(color: Palette.roll, size: CGSize(width: length, height: rad * 1.7))
+            body.anchorPoint = CGPoint(x: 0, y: 0.5)
             container.addChild(body)
-            n.body = body
-
-            let tail = SKSpriteNode(color: Palette.hold.withAlphaComponent(0.8),
-                                    size: CGSize(width: max(6, laneWidth * CGFloat(note.width) - 18), height: 3))
-            tail.position = CGPoint(x: cx, y: length)
+            let tail = SKSpriteNode(texture: rollCapTexture(), size: CGSize(width: rad * 1.7, height: rad * 1.7))
+            tail.position = CGPoint(x: length, y: 0)
             container.addChild(tail)
-
-            let head = SKSpriteNode(texture: texture(for: .hold, width: note.width), size: noteSize(width: note.width))
-            head.position = CGPoint(x: cx, y: 0)
+            let head = SKSpriteNode(texture: rollHeadTexture(big: note.kind == .bigRoll),
+                                    size: CGSize(width: rad * 2, height: rad * 2))
             head.zPosition = 1
             container.addChild(head)
-            n.head = head
-
-        case .slide:
-            let ribbon = SKShapeNode(path: slidePath(note))
-            ribbon.fillColor = Palette.slide.withAlphaComponent(0.28)
-            ribbon.strokeColor = Palette.slide.withAlphaComponent(0.85)
-            ribbon.lineWidth = 2
-            container.addChild(ribbon)
-
-            let head = SKSpriteNode(texture: texture(for: .slide, width: note.width), size: noteSize(width: note.width))
-            head.position = CGPoint(x: cx, y: 0)
-            head.zPosition = 1
-            container.addChild(head)
-            n.head = head
+            let text = SKLabelNode(fontNamed: "HiraginoSans-W8")
+            text.text = "連打"
+            text.fontSize = rad * 0.75
+            text.fontColor = UIColor(red: 0.4, green: 0.2, blue: 0, alpha: 1)
+            text.verticalAlignmentMode = .center
+            text.position = CGPoint(x: min(length * 0.5, rad * 2.5), y: 0)
+            text.zPosition = 1
+            container.addChild(text)
+            r.body = body
+            r.head = head
         }
 
         noteLayer.addChild(container)
-        n.container = container
-        active.append(n)
+        r.node = container
+        activeRolls.append(r)
     }
 
-    /// スライドの帯 (ノーツの頭を原点にした座標)
-    private func slidePath(_ note: ChartNote) -> CGPath {
-        let points = note.path.isEmpty ? [SlidePoint(time: note.time, lane: note.lane),
-                                          SlidePoint(time: note.end, lane: note.lane)] : note.path
-        let path = CGMutablePath()
-        let inset: CGFloat = 8
-        let width = laneWidth * CGFloat(note.width) - inset * 2
-        var right: [CGPoint] = []
-        for (i, p) in points.enumerated() {
-            let y = CGFloat(p.time - note.time) * pixelsPerSecond
-            let x = laneX(p.lane) + inset
-            if i == 0 {
-                path.move(to: CGPoint(x: x, y: y))
-            } else {
-                path.addLine(to: CGPoint(x: x, y: y))
-            }
-            right.append(CGPoint(x: x + width, y: y))
-        }
-        for p in right.reversed() {
-            path.addLine(to: p)
-        }
-        path.closeSubpath()
-        return path
+    // MARK: - 叩く
+
+    private enum Side {
+        case left, right
     }
 
-    // MARK: - 判定
+    private func hit(_ kind: DrumSound.Kind, side: Side) {
+        drumSound.play(kind)
+        flashDrum(kind, side: side)
+        guard phase == .playing else { return }
+        let t = songTime()
 
-    private func judgeHead(_ n: NoteState, _ j: Judgment) {
-        n.headDone = true
-        let note = n.note
-        let x = spanCenterX(left: note.lanePosition(at: note.time), width: note.width)
-        register(j, x: x)
-
-        if !note.isLong {
-            n.container?.removeFromParent()
-            n.container = nil
+        // 大音符の2打目
+        if let big = lastBig, !lastBigBonus, t - lastBigTime <= 0.06,
+           (kind == .don) == big.note.isDon {
+            lastBigBonus = true
+            bigBonusEffect()
             return
         }
-        if j == .miss {
-            // 始点を落としたら終点も落とす
-            n.tailDone = true
-            register(.miss, x: x, showLabel: false)
-            n.container?.run(.sequence([.group([.fadeAlpha(to: 0.15, duration: 1.2),
-                                                .moveBy(x: 0, y: -pixelsPerSecond * 1.2, duration: 1.2)]),
-                                        .removeFromParent()]))
-            n.container = nil
-        } else {
-            n.head?.run(.repeatForever(.sequence([.fadeAlpha(to: 0.6, duration: 0.08),
-                                                  .fadeAlpha(to: 1.0, duration: 0.08)])))
-            if note.kind == .slide, let tex = glowTexture {
-                let cursor = SKSpriteNode(texture: tex, size: CGSize(width: laneWidth * 1.4, height: laneWidth * 1.4))
-                cursor.color = Palette.slide
-                cursor.colorBlendFactor = 1
-                cursor.blendMode = .add
-                cursor.alpha = 0.8
-                cursor.position = CGPoint(x: x, y: judgeY)
-                effectLayer.addChild(cursor)
-                n.cursor = cursor
+
+        // 連打・風船の最中
+        for r in activeRolls where !r.done && t >= r.note.time - 0.03 && t <= r.note.end {
+            if r.note.kind == .balloon {
+                guard kind == .don else { return }
+                r.remaining -= 1
+                rollHits += 1
+                r.countLabel?.text = "\(max(0, r.remaining))"
+                r.head?.removeAction(forKey: "shake")
+                r.head?.run(.sequence([.scale(to: 1.15, duration: 0.03), .scale(to: 1.0, duration: 0.05)]),
+                            withKey: "shake")
+                if r.remaining <= 0 {
+                    popBalloon(r)
+                }
+            } else {
+                rollHits += 1
+                rollEffect(kind)
             }
+            updatePanels()
+            return
         }
-    }
 
-    private func judgeTail(_ n: NoteState, _ j: Judgment) {
-        guard !n.tailDone else { return }
-        n.tailDone = true
-        n.touch = nil
-        let note = n.note
-        let t = min(songTime(), note.end)
-        register(j, x: spanCenterX(left: note.lanePosition(at: t), width: note.width))
-        n.cursor?.removeFromParent()
-        n.cursor = nil
-        if j == .miss {
-            n.container?.run(.sequence([.group([.fadeAlpha(to: 0.1, duration: 0.8),
-                                                .moveBy(x: 0, y: -pixelsPerSecond * 0.8, duration: 0.8)]),
-                                        .removeFromParent()]))
+        // 普通の音符
+        var i = nextNormal
+        while i < normals.count && normals[i].judged { i += 1 }
+        guard i < normals.count else { return }
+        let n = normals[i]
+        let dt = t - n.note.time
+        if dt < -JudgeWindow.bad { return }
+        let matches = (kind == .don) == n.note.isDon
+        let j: Judgment
+        if matches {
+            guard let jj = JudgeWindow.judge(dt) else { return }
+            j = jj
         } else {
-            n.container?.removeFromParent()
+            // 色を間違えたら 不可
+            guard abs(dt) <= JudgeWindow.good else { return }
+            j = .miss
         }
-        n.container = nil
+        apply(j, to: n, t: t)
+        if j != .miss && n.note.isBig {
+            lastBig = n
+            lastBigTime = t
+            lastBigBonus = false
+        }
     }
 
-    private func register(_ j: Judgment, x: CGFloat, showLabel: Bool = true) {
+    private func apply(_ j: Judgment, to n: NoteState, t: Double) {
+        n.judged = true
+        if let node = n.node {
+            if j == .miss {
+                node.removeFromParent()
+            } else {
+                // 当たった音符はゲージのほうへ飛んでいく
+                node.zPosition = 50
+                node.removeFromParent()
+                effectLayer.addChild(node)
+                let target = CGPoint(x: gaugeRect.minX + gaugeRect.width * CGFloat(min(1, soul)), y: gaugeRect.midY)
+                node.run(.sequence([
+                    .group([.move(to: target, duration: 0.25), .scale(to: 0.6, duration: 0.25)]),
+                    .fadeOut(withDuration: 0.05),
+                    .removeFromParent(),
+                ]))
+            }
+            n.node = nil
+        }
+
         stageCounts.add(j)
-        if j == .miss {
-            combo = 0
-        } else {
+        switch j {
+        case .great:
             combo += 1
-            stageMaxCombo = max(stageMaxCombo, combo)
-            hitEffect(x: x, judgment: j)
+            soul += soulUnit
+        case .good:
+            combo += 1
+            soul += soulUnit * 0.5
+        case .miss:
+            combo = 0
+            soul -= soulUnit * (request.stages[stageIndex].chart.difficulty == .basic ? 1.0 : 1.6)
         }
-        if showLabel { showJudgment(j) }
+        soul = min(1, max(0, soul))
+        stageMaxCombo = max(stageMaxCombo, combo)
+
+        if j != .miss { hitEffect(j, big: n.note.isBig) }
+        showJudgment(j)
         updateComboLabel()
         updateScoreLabel()
+        updateGauge()
+        updatePanels()
 
-        if let course = request.course, var g = gauge {
-            let cost = course.cost.cost(for: j)
-            if cost > 0 {
-                g -= cost
-                gauge = g
-                updateGaugeDisplay(animated: true)
-                if g < 0 { failCourse() }
+        if let cond = request.course?.conditions {
+            let total = courseCounts()
+            for jj in [Judgment.good, .miss] {
+                if let limit = cond.limit(for: jj), total[jj] >= limit {
+                    failCourse()
+                    return
+                }
             }
         }
+    }
+
+    private func courseCounts() -> JudgeCounts {
+        stageResults.reduce(stageCounts) { $0 + $1.counts }
     }
 
     // MARK: - タッチ
-
-    private func lanePosition(_ x: CGFloat) -> Double {
-        guard laneWidth > 0 else { return -100 }
-        return Double((x - laneLeft) / laneWidth)
-    }
 
     override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent?) {
         for touch in touches {
             let p = touch.location(in: self)
 
             if let menu = pauseMenu {
-                let hit = menu.nodes(at: touch.location(in: menu)).compactMap(\.name).first
-                if hit == "resume" { resumeGame() }
-                if hit == "retire" { retire() }
+                let hitName = menu.nodes(at: touch.location(in: menu)).compactMap(\.name).first
+                if hitName == "resume" { resumeGame() }
+                if hitName == "retire" { retire() }
                 return
             }
 
-            if phase == .playing && hypot(p.x - pauseButton.position.x, p.y - pauseButton.position.y) < 34 {
+            if phase == .playing && hypot(p.x - pauseButton.position.x, p.y - pauseButton.position.y) < 30 {
                 pauseGame()
                 return
             }
 
-            touchInfos[ObjectIdentifier(touch)] = TouchInfo(x: p.x, anchorX: p.x)
-            guard phase == .playing, laneWidth > 0 else { continue }
-            let lp = lanePosition(p.x)
-            flashBeam(Int(floor(lp)))
-            tryTap(touch: touch, lane: lp)
-        }
-    }
-
-    override func touchesMoved(_ touches: Set<UITouch>, with event: UIEvent?) {
-        guard phase == .playing else { return }
-        let threshold = max(18, laneWidth * 0.3)
-        for touch in touches {
-            let id = ObjectIdentifier(touch)
-            guard var info = touchInfos[id] else { continue }
-            let x = touch.location(in: self).x
-            info.x = x
-            let holding = active.contains { $0.touch === touch }
-            if !holding {
-                let dx = x - info.anchorX
-                if abs(dx) >= threshold {
-                    tryWipe(dir: dx > 0 ? 1 : -1, lane: lanePosition(x))
-                    info.anchorX = x
-                }
-            }
-            touchInfos[id] = info
-        }
-    }
-
-    override func touchesEnded(_ touches: Set<UITouch>, with event: UIEvent?) {
-        release(touches)
-    }
-
-    override func touchesCancelled(_ touches: Set<UITouch>, with event: UIEvent?) {
-        release(touches)
-    }
-
-    private func release(_ released: Set<UITouch>) {
-        for touch in released {
-            touchInfos.removeValue(forKey: ObjectIdentifier(touch))
-            guard phase == .playing else { continue }
-            let t = songTime()
-            for n in active where n.touch === touch && !n.tailDone {
-                // 終わりの少し前までなら離してもOK
-                judgeTail(n, n.note.end - t <= 0.15 ? .perfect : .miss)
+            guard didSetup else { continue }
+            let d = hypot(p.x - drumCenter.x, p.y - drumCenter.y)
+            let side: Side = p.x < drumCenter.x ? .left : .right
+            if d <= faceR * 1.04 {
+                hit(.don, side: side)
+            } else {
+                hit(.ka, side: side)
             }
         }
-    }
-
-    private func tryTap(touch: UITouch, lane lp: Double) {
-        let t = songTime()
-        var best: NoteState?
-        var bestAbs = Double.infinity
-        for n in active where !n.headDone && n.note.kind != .wipe {
-            let note = n.note
-            let left = note.lanePosition(at: note.time)
-            guard lp >= left - 0.25 && lp <= left + note.width + 0.25 else { continue }
-            let dt = t - note.time
-            guard JudgeWindow.judge(dt) != nil else { continue }
-            if abs(dt) < bestAbs {
-                bestAbs = abs(dt)
-                best = n
-            }
-        }
-        guard let n = best, let j = JudgeWindow.judge(t - n.note.time) else { return }
-        judgeHead(n, j)
-        if n.note.isLong && j != .miss {
-            n.touch = touch
-        }
-    }
-
-    private func tryWipe(dir: Int, lane lp: Double) {
-        let t = songTime()
-        var best: NoteState?
-        var bestAbs = Double.infinity
-        for n in active where !n.headDone && n.note.kind == .wipe && n.note.dir == dir {
-            let note = n.note
-            guard lp >= note.lane - 1 && lp <= note.lane + note.width + 1 else { continue }
-            let dt = t - note.time
-            guard JudgeWindow.judge(dt) != nil else { continue }
-            if abs(dt) < bestAbs {
-                bestAbs = abs(dt)
-                best = n
-            }
-        }
-        guard let n = best, let j = JudgeWindow.judge(t - n.note.time) else { return }
-        judgeHead(n, j)
     }
 
     // MARK: - ポーズ
@@ -844,12 +914,6 @@ final class GameScene: SKScene {
         pausedRawTime = rawTime()
         player?.pause()
 
-        // 押しっぱなしのノーツは、ポーズしたら成功扱いにする
-        for n in active where n.note.isLong && n.headDone && !n.tailDone {
-            judgeTail(n, .perfect)
-        }
-        active.removeAll { $0.finished }
-
         let menu = SKNode()
         menu.zPosition = 100
         let dim = SKSpriteNode(color: UIColor(white: 0, alpha: 0.7), size: size)
@@ -859,11 +923,11 @@ final class GameScene: SKScene {
         let title = SKLabelNode(fontNamed: "AvenirNext-Heavy")
         title.text = "PAUSE"
         title.fontSize = 34
-        title.position = CGPoint(x: size.width / 2, y: size.height * 0.68)
+        title.position = CGPoint(x: size.width / 2, y: size.height * 0.7)
         menu.addChild(title)
 
-        menu.addChild(menuButton("RESUME", name: "resume", y: size.height * 0.5))
-        menu.addChild(menuButton(request.isCourse ? "RETIRE (不合格)" : "RETIRE", name: "retire", y: size.height * 0.32))
+        menu.addChild(menuButton("つづける", name: "resume", y: size.height * 0.5))
+        menu.addChild(menuButton(request.isCourse ? "やめる (不合格)" : "やめる", name: "retire", y: size.height * 0.32))
 
         addChild(menu)
         pauseMenu = menu
@@ -889,7 +953,6 @@ final class GameScene: SKScene {
         let delay = 0.8
         let resumeAt = pausedRawTime - delay
         startHost = CACurrentMediaTime() - resumeAt
-        lastFrameTime = resumeAt - offset
         if let p = player {
             if pausedRawTime > 0 {
                 p.currentTime = pausedRawTime
@@ -915,21 +978,21 @@ final class GameScene: SKScene {
         }
     }
 
-    // MARK: - 表示
+    // MARK: - 表示の更新
 
     private func updateScoreLabel() {
-        let s = stageCounts.score(totalNotes: stageJudgments)
+        let s = stageCounts.score(totalNotes: normals.count)
         let total = stageResults.reduce(0) { $0 + $1.score } + s
         scoreLabel.text = String(format: "%07d", request.isCourse ? total : s)
     }
 
     private func updateComboLabel() {
-        if combo >= 3 {
+        if combo >= 5 {
             comboLabel.text = "\(combo)"
             comboLabel.alpha = 1
             comboCaption.alpha = 1
             comboLabel.removeAction(forKey: "pop")
-            comboLabel.setScale(1.12)
+            comboLabel.setScale(1.15)
             comboLabel.run(.scale(to: 1.0, duration: 0.08), withKey: "pop")
         } else {
             comboLabel.alpha = 0
@@ -937,31 +1000,52 @@ final class GameScene: SKScene {
         }
     }
 
-    private func updateGaugeDisplay(animated: Bool) {
-        guard let g = gauge else { return }
-        let shown = max(0, g)
-        let ratio = CGFloat(shown) / CGFloat(gaugeMax)
-        let color: UIColor
-        if ratio > 0.5 {
-            color = UIColor(red: 0.3, green: 0.85, blue: 1.0, alpha: 1)
-        } else if ratio > 0.25 {
-            color = UIColor(red: 1.0, green: 0.8, blue: 0.3, alpha: 1)
+    private func updateGauge() {
+        let ratio = CGFloat(min(1, max(0, soul)))
+        gaugeFill.size = CGSize(width: gaugeRect.width * ratio, height: gaugeRect.height)
+        if soul >= SoulGauge.clearLine {
+            gaugeFill.color = UIColor(red: 1.0, green: 0.85, blue: 0.2, alpha: 1)
         } else {
-            color = UIColor(red: 1.0, green: 0.3, blue: 0.35, alpha: 1)
+            gaugeFill.color = UIColor(red: 0.95, green: 0.3, blue: 0.2, alpha: 1)
         }
-        gaugeFill.color = color
-        gaugeLabel.fontColor = color
-        gaugeLabel.text = "\(shown)"
-        let height = (size.height - judgeY) * ratio
-        if animated {
-            gaugeFill.removeAction(forKey: "size")
-            gaugeFill.run(.resize(toHeight: height, duration: 0.12), withKey: "size")
-            gaugeLabel.removeAction(forKey: "flash")
-            gaugeLabel.alpha = 0.45
-            gaugeLabel.run(.fadeAlpha(to: 0.2, duration: 0.3), withKey: "flash")
+    }
+
+    private func updatePanels() {
+        guard let left = leftPanel, let right = rightPanel else { return }
+        if let cond = request.course?.conditions {
+            let total = courseCounts()
+            setPanel(left, title: "可 (GOOD)", count: total.good, limit: cond.good, color: Judgment.good.uiColor)
+            setPanel(right, title: "不可 (MISS)", count: total.miss, limit: cond.miss, color: Judgment.miss.uiColor)
         } else {
-            gaugeFill.size = CGSize(width: fieldWidth, height: height)
+            left.title.text = "連打"
+            left.value.text = "\(rollHits)"
+            left.value.fontColor = Palette.roll
+            left.bar.isHidden = true
+            left.barBack.isHidden = true
+            right.title.text = "魂ゲージ"
+            right.value.text = "\(Int((soul * 100).rounded()))%"
+            right.value.fontColor = soul >= SoulGauge.clearLine ? Palette.roll : .white
+            right.bar.isHidden = true
+            right.barBack.isHidden = true
         }
+    }
+
+    /// 段位の条件ゲージ。残りが減っていき、0になったら不合格
+    private func setPanel(_ p: Panel, title: String, count: Int, limit: Int?, color: UIColor) {
+        p.title.text = title
+        p.title.fontColor = color
+        guard let limit else {
+            p.value.text = "条件なし"
+            p.bar.isHidden = true
+            return
+        }
+        let remain = max(0, limit - count)
+        p.value.text = "あと \(remain)"
+        let ratio = CGFloat(remain) / CGFloat(max(1, limit))
+        p.bar.size = CGSize(width: p.width * ratio, height: p.bar.size.height)
+        let danger = ratio <= 0.25
+        p.bar.color = danger ? UIColor(red: 1, green: 0.25, blue: 0.25, alpha: 1) : color
+        p.value.fontColor = danger ? UIColor(red: 1, green: 0.35, blue: 0.35, alpha: 1) : .white
     }
 
     private func showJudgment(_ j: Judgment) {
@@ -969,11 +1053,11 @@ final class GameScene: SKScene {
         judgeLabel.text = j.label
         judgeLabel.fontColor = j.uiColor
         judgeLabel.alpha = 1
-        judgeLabel.setScale(1.25)
+        judgeLabel.position.y = laneY + laneH * 0.55
         judgeLabel.run(.sequence([
-            .scale(to: 1.0, duration: 0.06),
-            .wait(forDuration: 0.3),
-            .fadeOut(withDuration: 0.15),
+            .moveBy(x: 0, y: 8, duration: 0.08),
+            .wait(forDuration: 0.25),
+            .fadeOut(withDuration: 0.12),
         ]))
     }
 
@@ -994,139 +1078,115 @@ final class GameScene: SKScene {
         if sub != nil { bannerSub.run(seq) }
     }
 
-    private func flashBeam(_ lane: Int) {
-        guard lane >= 0 && lane < beams.count else { return }
-        let beam = beams[lane]
-        beam.removeAllActions()
-        beam.alpha = 1
-        beam.run(.fadeOut(withDuration: 0.18))
+    private func flashDrum(_ kind: DrumSound.Kind, side: Side) {
+        let i = side == .left ? 0 : 1
+        let node = kind == .don ? faceFlash[i] : rimFlash[i]
+        node.removeAllActions()
+        node.alpha = 1
+        node.run(.fadeOut(withDuration: 0.12))
     }
 
-    private func lightBeams(left: Double, width: Double) {
-        let from = max(0, Int(floor(left + 0.1)))
-        let to = min(beams.count - 1, Int(ceil(left + width - 0.1)) - 1)
-        guard from <= to else { return }
-        for i in from...to {
-            let beam = beams[i]
-            beam.removeAllActions()
-            beam.alpha = 0.6
-            beam.run(.fadeOut(withDuration: 0.15))
-        }
-    }
-
-    private func hitEffect(x: CGFloat, judgment: Judgment) {
-        guard let tex = glowTexture else { return }
-        let fx = SKSpriteNode(texture: tex, size: CGSize(width: laneWidth * 1.5, height: laneWidth * 1.5))
-        fx.position = CGPoint(x: x, y: judgeY)
-        fx.color = judgment.uiColor
-        fx.colorBlendFactor = 1
-        fx.blendMode = .add
-        fx.setScale(0.5)
-        effectLayer.addChild(fx)
-        fx.run(.sequence([
-            .group([.scale(to: 1.2, duration: 0.18), .fadeOut(withDuration: 0.18)]),
+    private func hitEffect(_ j: Judgment, big: Bool) {
+        let ring = SKShapeNode(circleOfRadius: (big ? bigR : smallR) * 1.1)
+        ring.strokeColor = j == .great ? Judgment.great.uiColor : .white
+        ring.lineWidth = 4
+        ring.glowWidth = 3
+        ring.position = CGPoint(x: judgeX, y: laneY)
+        effectLayer.addChild(ring)
+        ring.run(.sequence([
+            .group([.scale(to: 1.5, duration: 0.15), .fadeOut(withDuration: 0.15)]),
             .removeFromParent(),
         ]))
     }
 
+    private func bigBonusEffect() {
+        let ring = SKShapeNode(circleOfRadius: bigR * 1.3)
+        ring.strokeColor = UIColor(red: 1, green: 0.9, blue: 0.3, alpha: 1)
+        ring.lineWidth = 6
+        ring.glowWidth = 6
+        ring.position = CGPoint(x: judgeX, y: laneY)
+        effectLayer.addChild(ring)
+        ring.run(.sequence([
+            .group([.scale(to: 1.6, duration: 0.2), .fadeOut(withDuration: 0.2)]),
+            .removeFromParent(),
+        ]))
+    }
+
+    private func rollEffect(_ kind: DrumSound.Kind) {
+        let dot = SKSpriteNode(texture: noteTexture(don: kind == .don, big: false),
+                               size: CGSize(width: smallR * 1.4, height: smallR * 1.4))
+        dot.position = CGPoint(x: judgeX, y: laneY)
+        effectLayer.addChild(dot)
+        let dx = CGFloat.random(in: 20...80)
+        dot.run(.sequence([
+            .group([.moveBy(x: dx, y: laneH * 0.9, duration: 0.3), .fadeOut(withDuration: 0.3)]),
+            .removeFromParent(),
+        ]))
+    }
+
+    private func popBalloon(_ r: RollState) {
+        r.done = true
+        if let node = r.node {
+            node.run(.sequence([.group([.scale(to: 1.8, duration: 0.15), .fadeOut(withDuration: 0.15)]),
+                                .removeFromParent()]))
+        }
+        r.node = nil
+        showBanner("パーン!", sub: nil, hold: 0.4, color: Palette.balloon)
+    }
+
     // MARK: - テクスチャ
 
-    private func texture(for kind: ChartNote.Kind, width: Double, dir: Int = 1) -> SKTexture {
-        let key = "\(kind.rawValue)-\(width)-\(dir)"
-        if let t = textureCache[key] { return t }
-        let t: SKTexture
-        switch kind {
-        case .tap:
-            t = makeNoteTexture(size: noteSize(width: width), color: Palette.tap)
-        case .hold:
-            t = makeNoteTexture(size: noteSize(width: width), color: Palette.hold)
-        case .slide:
-            t = makeNoteTexture(size: noteSize(width: width), color: Palette.slide)
-        case .wipe:
-            t = makeWipeTexture(size: noteSize(width: width, scale: 1.35), dir: dir)
-        }
-        textureCache[key] = t
+    private func noteTexture(don: Bool, big: Bool) -> SKTexture {
+        let key = "note-\(don)-\(big)"
+        if let t = textures[key] { return t }
+        let r = big ? bigR : smallR
+        let t = circleTexture(radius: r, fill: don ? Palette.don : Palette.ka)
+        textures[key] = t
         return t
     }
 
-    private func makeNoteTexture(size: CGSize, color: UIColor) -> SKTexture {
-        let renderer = UIGraphicsImageRenderer(size: size)
-        let image = renderer.image { _ in
-            let rect = CGRect(origin: .zero, size: size).insetBy(dx: 1, dy: 1)
-            let radius = rect.height * 0.35
-            color.setFill()
-            UIBezierPath(roundedRect: rect, cornerRadius: radius).fill()
-            UIColor(white: 1, alpha: 0.55).setFill()
-            let shine = CGRect(x: rect.minX + 4, y: rect.minY + 2, width: max(1, rect.width - 8), height: rect.height * 0.32)
-            UIBezierPath(roundedRect: shine, cornerRadius: shine.height / 2).fill()
-            UIColor(white: 1, alpha: 0.9).setStroke()
-            let border = UIBezierPath(roundedRect: rect.insetBy(dx: 1, dy: 1), cornerRadius: radius)
-            border.lineWidth = 1.5
-            border.stroke()
-        }
-        return SKTexture(image: image)
+    private func rollHeadTexture(big: Bool) -> SKTexture {
+        let key = "roll-\(big)"
+        if let t = textures[key] { return t }
+        let t = circleTexture(radius: big ? bigR : smallR, fill: Palette.roll)
+        textures[key] = t
+        return t
     }
 
-    private func makeWipeTexture(size: CGSize, dir: Int) -> SKTexture {
-        let renderer = UIGraphicsImageRenderer(size: size)
-        let image = renderer.image { ctx in
-            let rect = CGRect(origin: .zero, size: size).insetBy(dx: 1, dy: 1)
-            let radius = rect.height * 0.3
-            Palette.wipe.withAlphaComponent(0.9).setFill()
-            UIBezierPath(roundedRect: rect, cornerRadius: radius).fill()
-            UIColor.white.setStroke()
-            let border = UIBezierPath(roundedRect: rect.insetBy(dx: 1, dy: 1), cornerRadius: radius)
-            border.lineWidth = 1.5
-            border.stroke()
-
-            // 矢印 (くの字) を並べる
-            let cg = ctx.cgContext
-            cg.setStrokeColor(UIColor.white.cgColor)
-            cg.setLineWidth(3)
-            cg.setLineCap(.round)
-            cg.setLineJoin(.round)
-            let h = rect.height * 0.28
-            let spacing: CGFloat = 22
-            let count = max(1, Int((rect.width - 16) / spacing))
-            let total = CGFloat(count - 1) * spacing
-            for i in 0..<count {
-                let cx = rect.midX - total / 2 + CGFloat(i) * spacing
-                let d = CGFloat(dir) * 5
-                cg.move(to: CGPoint(x: cx - d, y: rect.midY - h))
-                cg.addLine(to: CGPoint(x: cx + d, y: rect.midY))
-                cg.addLine(to: CGPoint(x: cx - d, y: rect.midY + h))
-            }
-            cg.strokePath()
-        }
-        return SKTexture(image: image)
-    }
-
-    private func beamTexture() -> SKTexture {
-        if let t = textureCache["beam"] { return t }
-        let size = CGSize(width: 8, height: 256)
-        let renderer = UIGraphicsImageRenderer(size: size)
-        let image = renderer.image { ctx in
-            let colors = [UIColor.white.withAlphaComponent(0.0).cgColor,
-                          UIColor(red: 0.6, green: 0.9, blue: 1, alpha: 0.45).cgColor] as CFArray
-            if let g = CGGradient(colorsSpace: CGColorSpaceCreateDeviceRGB(), colors: colors, locations: [0, 1]) {
-                ctx.cgContext.drawLinearGradient(g, start: .zero, end: CGPoint(x: 0, y: size.height), options: [])
-            }
+    private func rollCapTexture() -> SKTexture {
+        if let t = textures["cap"] { return t }
+        let size = CGSize(width: 64, height: 64)
+        let image = UIGraphicsImageRenderer(size: size).image { _ in
+            Palette.roll.setFill()
+            UIBezierPath(ovalIn: CGRect(origin: .zero, size: size)).fill()
         }
         let t = SKTexture(image: image)
-        textureCache["beam"] = t
+        textures["cap"] = t
         return t
     }
 
-    private func makeGlowTexture() -> SKTexture {
-        let size = CGSize(width: 128, height: 128)
-        let renderer = UIGraphicsImageRenderer(size: size)
-        let image = renderer.image { ctx in
-            let colors = [UIColor.white.cgColor, UIColor.white.withAlphaComponent(0).cgColor] as CFArray
-            if let g = CGGradient(colorsSpace: CGColorSpaceCreateDeviceRGB(), colors: colors, locations: [0, 1]) {
-                let c = CGPoint(x: 64, y: 64)
-                ctx.cgContext.drawRadialGradient(g, startCenter: c, startRadius: 0, endCenter: c, endRadius: 64,
-                                                 options: [])
-            }
+    private func balloonTexture() -> SKTexture {
+        if let t = textures["balloon"] { return t }
+        let t = circleTexture(radius: smallR * 1.1, fill: Palette.balloon)
+        textures["balloon"] = t
+        return t
+    }
+
+    /// 黒いふち + 白いわく + 色の中身 の丸い音符
+    private func circleTexture(radius: CGFloat, fill: UIColor) -> SKTexture {
+        let d = radius * 2
+        let size = CGSize(width: d, height: d)
+        let image = UIGraphicsImageRenderer(size: size).image { _ in
+            let outer = CGRect(origin: .zero, size: size)
+            UIColor(white: 0.08, alpha: 1).setFill()
+            UIBezierPath(ovalIn: outer).fill()
+            UIColor.white.setFill()
+            UIBezierPath(ovalIn: outer.insetBy(dx: d * 0.06, dy: d * 0.06)).fill()
+            fill.setFill()
+            UIBezierPath(ovalIn: outer.insetBy(dx: d * 0.16, dy: d * 0.16)).fill()
+            UIColor(white: 1, alpha: 0.35).setFill()
+            let shine = CGRect(x: d * 0.3, y: d * 0.22, width: d * 0.28, height: d * 0.14)
+            UIBezierPath(ovalIn: shine).fill()
         }
         return SKTexture(image: image)
     }

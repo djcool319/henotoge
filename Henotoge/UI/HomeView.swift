@@ -12,7 +12,7 @@ struct HomeView: View {
                             .foregroundStyle(
                                 LinearGradient(colors: [.cyan, .pink], startPoint: .leading, endPoint: .trailing)
                             )
-                        Text("6 LANE · 2 FINGER RHYTHM GAME")
+                        Text("DRUM RHYTHM GAME")
                             .font(.caption.bold())
                             .tracking(3)
                             .foregroundStyle(.secondary)
@@ -39,7 +39,7 @@ struct HomeView: View {
                             NavigationLink {
                                 SettingsView()
                             } label: {
-                                MenuButton(title: "設定", sub: "速さ・タイミング", color: .gray)
+                                MenuButton(title: "設定", sub: "速さ・タイミング・音量", color: .gray)
                             }
                         }
                     }

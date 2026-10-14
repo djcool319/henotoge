@@ -1,25 +1,21 @@
 import SwiftUI
 
 struct SettingsView: View {
-    @AppStorage(GameSettings.hiSpeedKey) private var hiSpeed: Double = GameSettings.defaultHiSpeed
+    @AppStorage(GameSettings.scrollKey) private var scroll: Double = GameSettings.defaultScroll
     @AppStorage(GameSettings.offsetKey) private var offsetMs: Int = 0
+    @AppStorage(GameSettings.seVolumeKey) private var seVolume: Double = 0.8
     @State private var confirmReset = false
 
     var body: some View {
         Form {
             Section {
-                Stepper(value: $hiSpeed, in: GameSettings.hiSpeedRange, step: 0.25) {
+                Stepper(value: $scroll, in: GameSettings.scrollRange, step: 0.1) {
                     HStack {
                         Text("ハイスピード")
                         Spacer()
-                        Text(String(format: "x%.2f", hiSpeed)).monospacedDigit().foregroundStyle(.secondary)
+                        Text(String(format: "x%.1f", scroll)).monospacedDigit().foregroundStyle(.secondary)
                     }
                 }
-            } footer: {
-                Text("ノーツが落ちてくる速さ。大きいほど速い。")
-            }
-
-            Section {
                 Stepper(value: $offsetMs, in: GameSettings.offsetRange, step: 5) {
                     HStack {
                         Text("タイミング調整")
@@ -27,8 +23,12 @@ struct SettingsView: View {
                         Text("\(offsetMs > 0 ? "+" : "")\(offsetMs) ms").monospacedDigit().foregroundStyle(.secondary)
                     }
                 }
+                HStack {
+                    Text("太鼓の音")
+                    Slider(value: $seVolume, in: 0...1)
+                }
             } footer: {
-                Text("ちゃんと合わせているのに判定が遅れ気味ならプラス、早すぎるならマイナスに。Bluetoothイヤホンは +150〜200 ms くらいが目安。")
+                Text("タイミング: ちゃんと合わせているのに判定が遅れ気味ならプラス、早すぎるならマイナスに。Bluetoothイヤホンは +150〜200 ms くらいが目安。")
             }
 
             Section {

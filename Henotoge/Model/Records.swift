@@ -17,7 +17,7 @@ enum Lamp: Int, Codable, Comparable {
         case .failed: return "FAILED"
         case .clear: return "CLEAR"
         case .fullCombo: return "FULL COMBO"
-        case .allPerfect: return "ALL PERFECT"
+        case .allPerfect: return "全良"
         }
     }
 
@@ -35,9 +35,9 @@ enum Lamp: Int, Codable, Comparable {
     static func from(stage: StageResult) -> Lamp {
         guard stage.completed else { return .failed }
         let c = stage.counts
-        if c.miss == 0 && c.great == 0 && c.good == 0 { return .allPerfect }
+        if c.miss == 0 && c.good == 0 { return .allPerfect }
         if c.miss == 0 { return .fullCombo }
-        return stage.score >= 700_000 ? .clear : .failed
+        return stage.soulGauge >= SoulGauge.clearLine ? .clear : .failed
     }
 }
 
@@ -58,8 +58,8 @@ final class Records: ObservableObject {
     @Published private(set) var best: [String: BestRecord] = [:]
     @Published private(set) var courses: [String: CourseRecord] = [:]
 
-    private let bestKey = "records.best.v1"
-    private let courseKey = "records.course.v1"
+    private let bestKey = "records.best.v2"
+    private let courseKey = "records.course.v2"
 
     private init() {
         let d = UserDefaults.standard

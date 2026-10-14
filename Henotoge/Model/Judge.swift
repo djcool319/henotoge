@@ -2,16 +2,23 @@ import Foundation
 import UIKit
 import SwiftUI
 
-/// 判定
+/// 判定 (良 / 可 / 不可)
 enum Judgment: Int, CaseIterable, Codable {
-    case perfect
     case great
     case good
     case miss
 
+    /// 画面に出す文字
     var label: String {
         switch self {
-        case .perfect: return "PERFECT"
+        case .great: return "良"
+        case .good: return "可"
+        case .miss: return "不可"
+        }
+    }
+
+    var english: String {
+        switch self {
         case .great: return "GREAT"
         case .good: return "GOOD"
         case .miss: return "MISS"
@@ -21,19 +28,17 @@ enum Judgment: Int, CaseIterable, Codable {
     /// スコアへの寄与率
     var rate: Double {
         switch self {
-        case .perfect: return 1.0
-        case .great: return 0.7
-        case .good: return 0.3
+        case .great: return 1.0
+        case .good: return 0.5
         case .miss: return 0.0
         }
     }
 
     var uiColor: UIColor {
         switch self {
-        case .perfect: return UIColor(red: 1.00, green: 0.92, blue: 0.35, alpha: 1)
-        case .great: return UIColor(red: 0.35, green: 0.90, blue: 1.00, alpha: 1)
-        case .good: return UIColor(red: 0.45, green: 1.00, blue: 0.55, alpha: 1)
-        case .miss: return UIColor(red: 1.00, green: 0.30, blue: 0.35, alpha: 1)
+        case .great: return UIColor(red: 1.00, green: 0.80, blue: 0.20, alpha: 1)
+        case .good: return UIColor(red: 0.95, green: 0.95, blue: 0.95, alpha: 1)
+        case .miss: return UIColor(red: 0.45, green: 0.55, blue: 1.00, alpha: 1)
         }
     }
 
@@ -42,33 +47,29 @@ enum Judgment: Int, CaseIterable, Codable {
 
 /// 判定幅(秒)
 enum JudgeWindow {
-    static let perfect = 0.040
-    static let great = 0.060
+    static let great = 0.040
     static let good = 0.100
-    /// GOOD より外で、これ以内の早すぎるタップは MISS。これより早いタップは無視
-    static let early = 0.120
+    /// GOOD より外で、これ以内の早すぎる叩きは 不可。これより早い叩きは何も起きない
+    static let bad = 0.120
 
-    /// dt = タップした時刻 - ノーツの時刻 (マイナスが早押し)
+    /// dt = 叩いた時刻 - 音符の時刻 (マイナスが早叩き)
     static func judge(_ dt: Double) -> Judgment? {
         let a = abs(dt)
-        if a <= perfect { return .perfect }
         if a <= great { return .great }
         if a <= good { return .good }
-        if dt < 0 && a <= early { return .miss }
+        if a <= bad { return .miss }
         return nil
     }
 }
 
 /// 判定の回数
 struct JudgeCounts: Codable, Equatable {
-    var perfect = 0
     var great = 0
     var good = 0
     var miss = 0
 
     mutating func add(_ j: Judgment) {
         switch j {
-        case .perfect: perfect += 1
         case .great: great += 1
         case .good: good += 1
         case .miss: miss += 1
@@ -77,26 +78,22 @@ struct JudgeCounts: Codable, Equatable {
 
     subscript(_ j: Judgment) -> Int {
         switch j {
-        case .perfect: return perfect
         case .great: return great
         case .good: return good
         case .miss: return miss
         }
     }
 
-    var total: Int { perfect + great + good + miss }
+    var total: Int { great + good + miss }
 
     static func + (a: JudgeCounts, b: JudgeCounts) -> JudgeCounts {
-        JudgeCounts(perfect: a.perfect + b.perfect, great: a.great + b.great,
-                    good: a.good + b.good, miss: a.miss + b.miss)
+        JudgeCounts(great: a.great + b.great, good: a.good + b.good, miss: a.miss + b.miss)
     }
 
     /// 1曲 1,000,000 点満点のスコア
     func score(totalNotes: Int) -> Int {
         guard totalNotes > 0 else { return 0 }
-        let sum = Double(perfect) * Judgment.perfect.rate
-            + Double(great) * Judgment.great.rate
-            + Double(good) * Judgment.good.rate
+        let sum = Double(great) * Judgment.great.rate + Double(good) * Judgment.good.rate
         return Int((sum / Double(totalNotes) * 1_000_000).rounded())
     }
 }

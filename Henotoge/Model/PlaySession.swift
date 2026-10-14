@@ -35,8 +35,17 @@ struct StageResult {
     let counts: JudgeCounts
     let score: Int
     let maxCombo: Int
+    /// 連打の回数
+    let rollHits: Int
+    /// 魂ゲージ (0〜1)
+    let soulGauge: Double
     /// 最後まで遊べたか (途中で落ちたら false)
     let completed: Bool
+}
+
+/// 魂ゲージのノルマ
+enum SoulGauge {
+    static let clearLine = 0.8
 }
 
 /// プレイ全体の結果
@@ -47,8 +56,6 @@ struct PlayResult {
     let failed: Bool
     /// 自分でやめた
     let retired: Bool
-    /// 段位ゲージの残り (フリープレイは nil)
-    let gaugeLeft: Int?
 
     var totalCounts: JudgeCounts {
         stages.reduce(JudgeCounts()) { $0 + $1.counts }
@@ -56,6 +63,10 @@ struct PlayResult {
 
     var totalScore: Int {
         stages.reduce(0) { $0 + $1.score }
+    }
+
+    var totalRollHits: Int {
+        stages.reduce(0) { $0 + $1.rollHits }
     }
 
     var maxCombo: Int {

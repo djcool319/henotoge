@@ -1,18 +1,18 @@
 # henotoge
 
-Swift (SpriteKit + SwiftUI) で作った横画面・6レーンの iOS 音ゲー。どの譜面も理論上は指2本で取れる。曲・譜面・コードはすべて AI 生成。
+Swift (SpriteKit + SwiftUI) で作った横画面の太鼓スタイル音ゲー。曲・譜面・コードはすべて AI 生成。
 
 ## 遊べるもの
 
-- **FREE PLAY** … オリジナル15曲(30〜60秒)。難易度は BASIC / EXTREME と、一部の曲に INSANE。レベルは 1〜10。
+- **FREE PLAY** … ノリのいいオリジナル15曲(どれも30〜60秒)。難易度は BASIC / EXTREME と、一部の曲に INSANE。レベルは 1〜10。
+  魂ゲージを最後に80%以上にできればクリア。
 - **段位認定** … 3曲メドレー × 5コース(初段・三段・五段・八段・皆伝)。
-  コースごとにゲージがあり、PERFECT -0 / GREAT -1 / GOOD -2 / MISS -3 のように減っていく。
-  0未満になった時点で不合格。ゲージの残りは譜面の後ろに表示される。
-- **設定** … ハイスピード、タイミング調整、記録リセット。
+  可(GOOD)と不可(MISS)の回数が、コースごとに決められた数「未満」なら合格。残りの回数は太鼓の左右にゲージで出る。
+- **設定** … ハイスピード、タイミング調整、太鼓の音量、記録リセット。
 
-ノーツは4種類: TAP(叩く) / HOLD(押しっぱなし) / SLIDE(押したまま帯に沿って動かす) / WIPE(矢印の向きにこする)。
+音符: ドン(赤・面を叩く) / カッ(青・ふちを叩く) / 大音符 / 連打(黄) / 風船。
 
-判定は PERFECT ±40ms / GREAT ±60ms / GOOD ±100ms / MISS ±120ms(早すぎるタップ)。スコアは1曲 1,000,000 点満点。
+判定は 良 ±40ms / 可 ±100ms / 不可 (早すぎ ±120ms・見逃し・色ちがい)。スコアは1曲 1,000,000 点満点。
 
 ## ipa の入手
 
@@ -27,9 +27,9 @@ Henotoge/
   Model/      曲データ・判定・記録・設定
   Game/       プレイ画面 (GameScene)
   UI/         SwiftUI の画面
-  Resources/  曲(m4a)と library.json  ← tools/generate.py で生成
+  Resources/  曲(m4a)・叩く音(SE)・library.json  ← tools/generate.py で生成
 tools/
-  generate.py 曲・譜面・段位コースのジェネレーター
+  generate.py 曲・譜面・叩く音・段位コースのジェネレーター
 project.yml   XcodeGen の設定
 ```
 
