@@ -49,6 +49,8 @@ struct BestRecord: Codable {
 struct CourseRecord: Codable {
     var passed: Bool
     var gold: Bool?
+    /// 何曲目まで到達したか
+    var reached: Int?
     var bestScore: Int
 }
 
@@ -97,7 +99,8 @@ final class Records: ObservableObject {
             let score = max(old?.bestScore ?? 0, result.totalScore)
             updated = score > (old?.bestScore ?? 0) || (result.coursePassed && !(old?.passed ?? false))
             let gold = result.courseGold || (old?.gold ?? false)
-            courses[course.id] = CourseRecord(passed: passed, gold: gold, bestScore: score)
+            let reached = max(old?.reached ?? 0, result.stages.count)
+            courses[course.id] = CourseRecord(passed: passed, gold: gold, reached: reached, bestScore: score)
         } else if let stage = result.stages.first, !result.retired {
             let k = key(stage.song.id, stage.chart.difficulty)
             let lamp = Lamp.from(stage: stage)

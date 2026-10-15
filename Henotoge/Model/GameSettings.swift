@@ -5,6 +5,8 @@ enum GameSettings {
     static let scrollKey = "settings.scroll.v2"
     static let offsetKey = "settings.offsetMs"
     static let seVolumeKey = "settings.seVolume"
+    /// 段位を順番に合格しなくても全部挑戦できるようにする
+    static let danUnlockKey = "settings.danUnlockAll"
 
     static let defaultScroll = 1.0
     static let scrollRange = 0.5...4.0

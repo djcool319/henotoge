@@ -3,6 +3,7 @@ import SwiftUI
 struct CourseSelectView: View {
     @ObservedObject private var records = Records.shared
     @State private var request: PlayRequest?
+    @AppStorage(GameSettings.danUnlockKey) private var danUnlock = false
 
     private let library = Library.shared
 
@@ -17,8 +18,12 @@ struct CourseSelectView: View {
                         .frame(maxWidth: .infinity, alignment: .leading)
 
                     ForEach(Array(library.courses.enumerated()), id: \.element.id) { index, course in
+                        // 前の段位に合格していないと挑戦できない (設定で解除できる)
+                        let locked = !danUnlock && index > 0
+                            && !(records.record(course: library.courses[index - 1])?.passed ?? false)
                         CourseCard(course: course, index: index, total: library.courses.count,
-                                   record: records.record(course: course)) {
+                                   record: records.record(course: course), locked: locked,
+                                   previousName: index > 0 ? library.courses[index - 1].name : nil) {
                             request = PlayRequest.course(course)
                         }
                     }
@@ -41,6 +46,8 @@ struct CourseCard: View {
     let index: Int
     let total: Int
     let record: CourseRecord?
+    var locked = false
+    var previousName: String?
     let onStart: () -> Void
 
     private var accent: Color {
@@ -76,7 +83,9 @@ struct CourseCard: View {
                     let level = song?.chart(stage.difficulty)?.level
                     HStack {
                         Text("\(i + 1)").font(.subheadline.monospacedDigit().bold()).frame(width: 18)
-                        Text(song?.title ?? "?").font(.subheadline)
+                        // まだ到達していない曲は ??? (1曲目は見える)
+                        Text(i == 0 || i < (record?.reached ?? 0) ? (song?.title ?? "?") : "???")
+                            .font(.subheadline)
                         Spacer()
                         Text("\(stage.difficulty.rawValue) \(level.map { "Lv.\($0)" } ?? "")")
                             .font(.caption.bold())
@@ -105,14 +114,16 @@ struct CourseCard: View {
             }
 
             Button(action: onStart) {
-                Text("挑戦する")
+                Text(locked ? "🔒 \(previousName ?? "前の段位")に合格すると挑戦できます" : "挑戦する")
                     .font(.headline)
                     .frame(maxWidth: .infinity)
                     .padding(.vertical, 12)
                     .background(accent.opacity(0.3), in: RoundedRectangle(cornerRadius: 10))
             }
             .buttonStyle(.plain)
+            .disabled(locked)
         }
+        .opacity(locked ? 0.55 : 1)
         .padding(16)
         .background(
             RoundedRectangle(cornerRadius: 16)

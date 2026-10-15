@@ -4,6 +4,7 @@ struct SettingsView: View {
     @AppStorage(GameSettings.scrollKey) private var scroll: Double = GameSettings.defaultScroll
     @AppStorage(GameSettings.offsetKey) private var offsetMs: Int = 0
     @AppStorage(GameSettings.seVolumeKey) private var seVolume: Double = 0.8
+    @AppStorage(GameSettings.danUnlockKey) private var danUnlock = false
     @State private var confirmReset = false
 
     var body: some View {
@@ -29,6 +30,12 @@ struct SettingsView: View {
                 }
             } footer: {
                 Text("タイミング: ちゃんと合わせているのに判定が遅れ気味ならプラス、早すぎるならマイナスに。Bluetoothイヤホンは +150〜200 ms くらいが目安。")
+            }
+
+            Section {
+                Toggle("段位を全部挑戦できるようにする", isOn: $danUnlock)
+            } footer: {
+                Text("オフのときは、前の段位に合格しないと次の段位に挑戦できません。")
             }
 
             Section {

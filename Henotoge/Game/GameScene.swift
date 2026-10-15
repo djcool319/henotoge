@@ -1348,11 +1348,11 @@ final class GameScene: SKScene {
         }
     }
 
-    /// 最後の曲の終盤 / 終了間際か
+    /// 演奏中の曲の 終盤 (残り音符が総数の10%以下) / 終了間際 (5%以下) か
     private var nearEnd: (late: Bool, veryLate: Bool) {
-        guard stageIndex == request.stages.count - 1, normals.count > 0 else { return (false, false) }
-        let progress = Double(stageCounts.total) / Double(normals.count)
-        return (progress >= 0.8, progress >= 0.95)
+        guard normals.count > 0 else { return (false, false) }
+        let left = Double(normals.count - stageCounts.total) / Double(normals.count)
+        return (left <= 0.10, left <= 0.05)
     }
 
     /// この曲で残っている連打の秒数 (風船も含む)
@@ -1479,7 +1479,7 @@ final class GameScene: SKScene {
             return (.color(GaugeColor.red), .fast, ratio)
         }
         let look: BarLook = .color(ratio < 0.5 ? GaugeColor.darkYellow : GaugeColor.yellow)
-        let blink: Blink = ratio >= 0.85 ? .slow : .none   // 合格条件の達成直前
+        let blink: Blink = ratio >= 0.95 ? .slow : .none   // 合格条件の達成直前 (差が5%以下)
         return (look, blink, ratio)
     }
 
