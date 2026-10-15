@@ -1084,6 +1084,8 @@ MIN_GAP = {1: 0.45, 2: 0.33, 3: 0.25, 4: 0.2, 5: 0.16, 6: 0.13, 7: 0.105, 8: 0.0
 
 
 def make_chart(spec, meta, difficulty, level):
+    if difficulty == "INSANE" and level >= 10:
+        return make_stream_chart(spec, meta, level)
     rng = np.random.default_rng(int(spec["id"][1:]) * 131 + level * 17 + len(difficulty))
     step = meta["step"]
     events = meta["events"]
@@ -1226,6 +1228,133 @@ def make_chart(spec, meta, difficulty, level):
 
     notes.sort(key=lambda n: n["t"])
     return notes
+
+
+# ------------------------------------------------------------
+# 最難関 (INSANE Lv10) 専用: ほぼ途切れない16分の流れ + 24分の固まり + 短い連打 + 大音符の連続
+# ------------------------------------------------------------
+# 1拍ぶんのリズム (16分が4つ。"6" は24分の6連)
+STREAM_BEATS = {
+    "chorus": [("xxxx", 34), ("xxx.", 14), ("x.xx", 12), ("xx.x", 12), ("6", 12), ("x.x.", 8), ("xx..", 5), ("x...", 3)],
+    "verse": [("xxxx", 18), ("xxx.", 16), ("x.xx", 14), ("xx.x", 14), ("x.x.", 18), ("6", 5), ("x...", 9), ("xx..", 6)],
+    "intro": [("x.x.", 30), ("x...", 30), ("xx.x", 15), ("xxx.", 10), ("....", 15)],
+    "break": [("x.x.", 30), ("x...", 30), ("xx.x", 15), ("xxx.", 10), ("....", 15)],
+    "build": [("xxxx", 30), ("x.x.", 30), ("xx.x", 20), ("xxx.", 20)],
+}
+# 色の並び (よく出る叩き分けの形)
+COLOR_RUNS = ["dkkd", "ddkd", "dkdd", "kddk", "dkkk", "kkdk", "ddkk", "dkdk", "kdkd", "dddk", "kkkd", "dkkdkd",
+              "ddkdkk", "kdkkdk", "dkdkkd", "dddddd", "kkkkkk", "ddkddk", "kkdkkd"]
+
+
+def make_stream_chart(spec, meta, level):
+    rng = np.random.default_rng(int(spec["id"][1:]) * 977 + level)
+    step = meta["step"]
+    beat = step * 4
+    events = meta["events"]
+    sections = meta["sections"]
+
+    def T(si):
+        return LEAD_IN + si * step
+
+    def ms(t):
+        return int(round(t * 1000))
+
+    notes = []
+    colors = []
+    color_pos = 0
+
+    def next_color(si=None):
+        nonlocal colors, color_pos
+        ev = events.get(si, {}) if si is not None else {}
+        # 音楽の強い所 (キック/スネア) は音に合わせる
+        if ev.get("snare", 0) >= 0.9 and rng.random() < 0.7:
+            return "k"
+        if ev.get("kick", 0) >= 0.9 and rng.random() < 0.7:
+            return "d"
+        if color_pos >= len(colors):
+            colors = list(COLOR_RUNS[int(rng.integers(0, len(COLOR_RUNS)))])
+            color_pos = 0
+        c = colors[color_pos]
+        color_pos += 1
+        return c
+
+    blocked_until = -1.0
+    balloons = 0
+    for bar, sec in enumerate(sections):
+        if sec == "outro":
+            notes.append({"k": "D", "t": ms(T(bar * 16))})
+            break
+        nxt = sections[bar + 1] if bar + 1 < len(sections) else "outro"
+        prev = sections[bar - 1] if bar else None
+
+        # ビルドの最後の小節: 1回目は風船、あとは大連打
+        if sec == "build" and nxt != "build":
+            t0, t1 = T(bar * 16), T(bar * 16 + 14)
+            if balloons == 0:
+                notes.append({"k": "b", "t": ms(t0), "e": ms(t1), "n": max(14, int((t1 - t0) * 11))})
+                balloons += 1
+            else:
+                notes.append({"k": "R", "t": ms(t0), "e": ms(t1)})
+            blocked_until = t1 + step * 1.5
+            continue
+
+        # 最難関はAメロもサビ並み、イントロや間奏もAメロ並みに詰める
+        kind = {"verse": "chorus", "intro": "verse", "break": "verse"}.get(sec, sec)
+        kind = kind if kind in STREAM_BEATS else "verse"
+        pats, weights = zip(*STREAM_BEATS[kind])
+        weights = np.array(weights, dtype=float)
+        # テンポが遅めの曲は 24分の固まりと16分の流れを増やして、毎秒11打くらいにそろえる
+        if meta["bpm"] < 170 and kind in ("chorus", "verse"):
+            boost = {"6": 2.6, "xxxx": 1.5, "x...": 0.3, "xx..": 0.4, "x.x.": 0.5}
+            weights = np.array([w * boost.get(p_, 1.0) for p_, w in zip(pats, weights)])
+        weights /= weights.sum()
+        phrase_end = bar % 8 == 7 and sec == "chorus" and nxt == "chorus"
+        short_roll = sec == "chorus" and bar % 4 == 1 and rng.random() < 0.5
+
+        for b in range(4):
+            si0 = bar * 16 + b * 4
+            tb = T(si0)
+            if tb < blocked_until:
+                continue
+            # 8小節フレーズの締め: 大音符を8分で4つ
+            if phase_big := (phrase_end and b >= 2):
+                for k in range(2):
+                    c = next_color(si0 + k * 2)
+                    notes.append({"k": c.upper(), "t": ms(T(si0 + k * 2))})
+                continue
+            # 小節の頭の大音符 (セクションの頭)
+            if b == 0 and sec != prev and sec in ("chorus", "verse"):
+                notes.append({"k": "D" if rng.random() < 0.6 else "K", "t": ms(tb)})
+                notes.append({"k": next_color(si0 + 2), "t": ms(T(si0 + 2))})
+                notes.append({"k": next_color(si0 + 3), "t": ms(T(si0 + 3))})
+                continue
+            # 短い黄色連打 (1拍)
+            if short_roll and b == 3:
+                notes.append({"k": "r", "t": ms(tb), "e": ms(tb + beat * 0.75)})
+                continue
+            pat = pats[int(rng.choice(len(pats), p=weights))]
+            if pat == "6":
+                c = next_color(si0)
+                run = c * 2 + ("k" if c == "d" else "d") + c * 3 if rng.random() < 0.4 else None
+                for k in range(6):
+                    cc = run[k] if run else next_color()
+                    notes.append({"k": cc, "t": ms(tb + k * beat / 6)})
+            else:
+                for k, ch in enumerate(pat):
+                    if ch == "x":
+                        notes.append({"k": next_color(si0 + k), "t": ms(T(si0 + k))})
+
+    notes.sort(key=lambda n: n["t"])
+    # 同じ時刻の重なりを消す
+    out = []
+    last_t = -1
+    for n in notes:
+        if n["k"] in "dkDK" and n["t"] == last_t:
+            continue
+        out.append(n)
+        if n["k"] in "dkDK":
+            last_t = n["t"]
+    return out
 
 
 BURST_PATTERNS = ["dkdkd", "ddkdd", "kkdkk", "dkkdk", "ddkkd", "dkdkdkd", "ddkddkd", "kdkdkdk", "dddkddd"]
