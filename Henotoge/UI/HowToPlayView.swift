@@ -11,9 +11,9 @@ struct HowToPlayView: View {
 
     private let items: [Item] = [
         Item(name: "ドン", color: Color(red: 0.96, green: 0.28, blue: 0.18), big: false,
-             text: "赤い音符。太鼓の「面」(まん中の白いところ)を叩く。"),
+             text: "赤い音符。画面下の灰色の半円の中を叩く。"),
         Item(name: "カッ", color: Color(red: 0.30, green: 0.75, blue: 0.82), big: false,
-             text: "青い音符。太鼓の「ふち」か、面の外のどこかを叩く。"),
+             text: "青い音符。半円の外ならどこを叩いてもOK。"),
         Item(name: "大音符", color: Color(red: 0.96, green: 0.28, blue: 0.18), big: true,
              text: "大きい音符。1回でOK。2本指でほぼ同時に叩くとボーナス演出。"),
         Item(name: "連打", color: Color(red: 1.0, green: 0.78, blue: 0.1), big: false,
@@ -53,11 +53,11 @@ struct HowToPlayView: View {
 
                     VStack(alignment: .leading, spacing: 6) {
                         Text("判定").font(.headline)
-                        Text("良 ±40ms / 可 ±100ms / 不可 (早すぎ ±120ms・見逃し・色ちがい)")
+                        Text("良 ±40ms / 可 ±100ms / 不可 (見逃し)。音符のないところで叩いても不可にはなりません")
                             .font(.subheadline.monospacedDigit())
                         Text("魂ゲージを曲の最後に80%以上にできればクリア。")
                             .font(.subheadline)
-                        Text("段位認定は3曲メドレー。可と不可の回数がそれぞれ決められた数「未満」なら合格 (皆伝は連打の回数も)。残りの回数は太鼓の左右に出ます。")
+                        Text("段位認定は3曲メドレー。魂ゲージ(3曲通し)が○%以上、可・不可が○回未満、上のコースは曲ごとの連打数が○回以上で合格。条件は画面下の左右に出ます。")
                             .font(.subheadline)
                             .foregroundStyle(.secondary)
                     }

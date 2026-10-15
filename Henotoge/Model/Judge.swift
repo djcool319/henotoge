@@ -49,15 +49,13 @@ enum Judgment: Int, CaseIterable, Codable {
 enum JudgeWindow {
     static let great = 0.040
     static let good = 0.100
-    /// GOOD より外で、これ以内の早すぎる叩きは 不可。これより早い叩きは何も起きない
-    static let bad = 0.120
 
     /// dt = 叩いた時刻 - 音符の時刻 (マイナスが早叩き)
+    /// 判定幅の外で叩いても何も起きない (空打ちで 不可 にはならない)
     static func judge(_ dt: Double) -> Judgment? {
         let a = abs(dt)
         if a <= great { return .great }
         if a <= good { return .good }
-        if a <= bad { return .miss }
         return nil
     }
 }

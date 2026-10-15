@@ -97,13 +97,18 @@ struct Song: Decodable, Identifiable {
     }
 }
 
-/// 段位の合格条件。可・不可はそれぞれの回数「未満」、連打はその回数「以上」で合格。nil は条件なし
+/// 段位の合格条件 (本家の段位道場ふう)。nil は条件なし
+///   gauge: 魂ゲージ (3曲通し) がこの % 以上
+///   good / miss: 可・不可がそれぞれこの回数「未満」
+///   roll: 曲ごとの連打数がこの回数「以上」
 struct CourseConditions: Decodable {
+    let gauge: Int?
     let good: Int?
     let miss: Int?
-    let roll: Int?
+    let roll: [Int?]?
 
     enum CodingKeys: String, CodingKey {
+        case gauge = "GAUGE"
         case good = "GOOD"
         case miss = "MISS"
         case roll = "ROLL"
@@ -115,6 +120,16 @@ struct CourseConditions: Decodable {
         case .miss: return miss
         case .great: return nil
         }
+    }
+
+    /// その曲の連打の条件
+    func rollNeed(stage: Int) -> Int? {
+        guard let roll, stage < roll.count else { return nil }
+        return roll[stage]
+    }
+
+    var hasRoll: Bool {
+        roll?.contains { $0 != nil } ?? false
     }
 }
 

@@ -73,7 +73,11 @@ SONGS = [
          levels={"BASIC": 5, "EXTREME": 8, "INSANE": 10}),
     dict(id="s14", title="HENOTOGE MAX", bpm=192, key=61, mode="minor", style="hardcore", bars=34,
          levels={"BASIC": 6, "EXTREME": 9, "INSANE": 10}),
-    dict(id="s15", title="終焉の大太鼓", bpm=200, key=59, mode="minor", style="dnb", bars=36,
+    # 持ち込み音源のアレンジ (皆伝3曲目)
+    dict(id="s15", title="Catastrophe", bpm=150, source="tools/sources/catastrophe.ogg", phase=1.441, src_bars=34,
+         sections=["intro"] * 3 + ["chorus"] * 8 + ["verse"] * 5 + ["build"] + ["chorus"] * 14 + ["build"]
+         + ["chorus"] * 2 + ["outro"],
+         crash_bars=[21, 27], stutter_bars=[32],
          levels={"BASIC": 6, "EXTREME": 9, "INSANE": 10}),
 ]
 
@@ -81,20 +85,21 @@ ARTIST = "henotoge sound team"
 
 # ------------------------------------------------------------
 # 段位認定 (3曲メドレー)
-#   conditions: GOOD(可) と MISS(不可) が それぞれ この回数「未満」なら合格
-#               ROLL があれば、連打をこの回数「以上」叩くことも条件 ("auto" は譜面から自動で決める)
+#   conditions: GAUGE  魂ゲージ (3曲通し) がこの % 以上
+#               GOOD / MISS  可・不可が それぞれ この回数「未満」
+#               ROLL  曲ごとの連打数がこの回数「以上」 ("auto" は譜面から曲ごとに決める)
 # ------------------------------------------------------------
 COURSES = [
     dict(id="dan1", name="初段", stages=[("s01", "EXTREME"), ("s02", "EXTREME"), ("s03", "EXTREME")],
-         conditions={"GOOD": 60, "MISS": 25}),
+         conditions={"GAUGE": 70, "GOOD": 60, "MISS": 25}),
     dict(id="dan2", name="三段", stages=[("s04", "EXTREME"), ("s05", "EXTREME"), ("s06", "EXTREME")],
-         conditions={"GOOD": 55, "MISS": 20}),
+         conditions={"GAUGE": 75, "GOOD": 50, "MISS": 20}),
     dict(id="dan3", name="五段", stages=[("s07", "EXTREME"), ("s08", "EXTREME"), ("s10", "EXTREME")],
-         conditions={"GOOD": 50, "MISS": 15}),
+         conditions={"GAUGE": 80, "GOOD": 40, "MISS": 15, "ROLL": "auto"}),
     dict(id="dan4", name="八段", stages=[("s11", "EXTREME"), ("s09", "INSANE"), ("s12", "INSANE")],
-         conditions={"GOOD": 45, "MISS": 12}),
+         conditions={"GAUGE": 90, "GOOD": 30, "MISS": 10, "ROLL": "auto"}),
     dict(id="dan5", name="皆伝", stages=[("s13", "INSANE"), ("s14", "INSANE"), ("s15", "INSANE")],
-         conditions={"GOOD": 30, "MISS": 5, "ROLL": "auto"}),
+         conditions={"GAUGE": 100, "GOOD": 20, "MISS": 5, "ROLL": "auto"}),
 ]
 
 MAJOR = [0, 2, 4, 5, 7, 9, 11]
@@ -849,6 +854,224 @@ def build_song(spec):
 
 
 # ------------------------------------------------------------
+# 持ち込み音源のアレンジ (皆伝3曲目「Catastrophe」)
+#   元の音源のビートに合わせて、ドラムの重ね・フィルター・溜め・スタッター・
+#   決めの一撃を足して、ゲーム用に組み直す。譜面の素材も元の音源から拾う。
+# ------------------------------------------------------------
+def load_source(path):
+    raw = subprocess.run(["ffmpeg", "-loglevel", "error", "-i", path, "-f", "s16le", "-ac", "1", "-ar", str(SR), "-"],
+                         capture_output=True, check=True).stdout
+    return np.frombuffer(raw, np.int16).astype(np.float64) / 32768.0
+
+
+def sweep_filter(x, kind, f_from, f_to, chunks=32):
+    """時間とともに周波数が動くフィルター (区切って少しずつ変える)"""
+    out = np.zeros_like(x)
+    size = len(x) // chunks + 1
+    for c in range(chunks):
+        a, b = c * size, min(len(x), (c + 1) * size)
+        if a >= len(x):
+            break
+        r = c / max(1, chunks - 1)
+        f = f_from * (f_to / f_from) ** r
+        pad = min(a, 2048)
+        seg = x[a - pad:b]
+        y = lowpass(seg, f, 2) if kind == "low" else highpass(seg, f, 2)
+        out[a:b] = y[pad:]
+    return out
+
+
+def build_from_source(spec):
+    rng = np.random.default_rng(1601)
+    bpm = spec["bpm"]
+    beat = 60.0 / bpm
+    step = beat / 4
+    bar_len = beat * 4
+    phase = spec["phase"]          # 元音源で最初の小節が始まる時刻
+    n_src_bars = spec["src_bars"]  # 使う小節数
+    sections = spec["sections"]    # 小節ごとのセクション (最後は outro)
+    assert len(sections) == n_src_bars + 1
+
+    src = load_source(os.path.join(ROOT, spec["source"]))
+    seconds = LEAD_IN + n_src_bars * bar_len + TAIL + 0.6
+    N = int(seconds * SR)
+    offset = LEAD_IN - phase          # 元音源の0秒を置く位置
+    o = int(round(offset * SR))
+    cut = int((phase + n_src_bars * bar_len) * SR)
+    body = np.zeros(N)
+    seg = src[:cut]
+    body[o:o + len(seg)] = seg[: max(0, min(len(seg), N - o))]
+
+    def T(bar, s=0):
+        return LEAD_IN + bar * bar_len + s * step
+
+    def idx(t):
+        return int(round(t * SR))
+
+    # ---- 元音源の加工 ----
+    # イントロ: こもった音から開いていく
+    intro_end = sections.index(next(s for s in sections if s != "intro"))
+    a, b = idx(T(0)) - int(0.3 * SR), idx(T(intro_end))
+    body[a:b] = sweep_filter(body[a:b], "low", 300, 16000)
+    # ビルド: 低音を抜いていく
+    for bar, sec in enumerate(sections):
+        if sec == "build" and (bar == 0 or sections[bar - 1] != "build"):
+            end_bar = bar
+            while end_bar < len(sections) and sections[end_bar] == "build":
+                end_bar += 1
+            a, b = idx(T(bar)), idx(T(end_bar))
+            body[a:b] = sweep_filter(body[a:b], "high", 60, 1800)
+
+    drums = Bus(N)
+    fx = Bus(N)
+    events = {}
+
+    def mark(si, inst, v=1.0):
+        d = events.setdefault(si, {})
+        d[inst] = max(d.get(inst, 0), v)
+
+    s_kick = drum_kick(rng, 1.3)
+    s_clap = drum_clap(rng)
+    s_snare = drum_snare(rng)
+    s_ohat = drum_hat(rng, True)
+    s_crash = drum_crash(rng)
+    s_taiko = drum_taiko(rng)
+    kick_times = []
+
+    for bar, sec in enumerate(sections):
+        prev = sections[bar - 1] if bar else None
+        nxt = sections[bar + 1] if bar + 1 < len(sections) else None
+        base = bar * 16
+
+        def hit(s, sound, gain, inst=None, v=1.0, bus=drums):
+            bus.add(T(bar, s), sound, gain)
+            if inst:
+                mark(base + s, inst, v)
+
+        if (sec != prev and sec in ("verse", "chorus")) or bar in spec.get("crash_bars", []):
+            hit(0, s_crash, 1.0, "crash")
+        if sec == "outro":
+            # 決めの一撃
+            hit(0, s_crash, 1.2, "crash")
+            hit(0, s_kick, 1.2, "kick")
+            hit(0, s_taiko, 1.1, "finale")
+            kick_times.append(T(bar))
+            break
+        for s in range(16):
+            if sec == "chorus":
+                if s % 4 == 0:
+                    hit(s, s_kick, 0.9, "kick")
+                    kick_times.append(T(bar, s))
+                if s in (4, 12):
+                    hit(s, s_clap, 0.7, "snare")
+                if s % 4 == 2:
+                    hit(s, s_ohat, 0.45, "hat", 0.4)
+            elif sec == "verse":
+                # 半分の速さに聞こえるビートで落差をつける
+                if s in (0, 10):
+                    hit(s, s_kick, 0.85, "kick")
+                    kick_times.append(T(bar, s))
+                if s == 8:
+                    hit(s, s_clap, 0.75, "snare")
+            elif sec == "build":
+                last = nxt != "build"
+                every = 4 if not last else (2 if s < 8 else 1)
+                if s % every == 0 and not (last and s >= 14):
+                    hit(s, s_snare, 0.3 + 0.5 * s / 16, "roll", 0.8)
+            elif sec == "intro" and bar == intro_end - 1 and s >= 8 and s % 2 == 0:
+                hit(s, s_snare, 0.4, "roll", 0.8)
+        if sec == "build" and nxt != "build":
+            fx.add(T(bar), riser(rng, bar_len), 1.0)
+
+    # ---- 元音源のリズムを拾う (譜面用) ----
+    def band_env(lo, hi):
+        sos = butter(4, [lo, hi], btype="band", fs=SR, output="sos")
+        return np.abs(sosfilt(sos, body))
+
+    k_env = band_env(40, 130)
+    s_env = band_env(1500, 5000)
+    m_env = band_env(300, 1500)
+
+    def onset(env, t):
+        a, b = idx(t - 0.02), idx(t + 0.025)
+        p = idx(t - 0.06)
+        return max(0.0, env[a:b].mean() - env[p:a].mean())
+
+    n_steps = n_src_bars * 16
+    K = np.array([onset(k_env, T(0, i)) for i in range(n_steps)])
+    S = np.array([onset(s_env, T(0, i)) for i in range(n_steps)])
+    Mx = np.array([onset(m_env, T(0, i)) for i in range(n_steps)])
+
+    def norm(v):
+        top = np.percentile(v, 95) or 1.0
+        return np.clip(v / top, 0, 1)
+
+    K, S, Mx = norm(K), norm(S), norm(Mx)
+    for i in range(n_steps):
+        if K[i] > 0.35:
+            mark(i, "kick", float(K[i]))
+        if S[i] > 0.35:
+            mark(i, "snare", float(S[i]) * 0.9)
+        if S[i] > 0.12 or K[i] > 0.12:
+            # 細かい刻み (高難度の候補)
+            mark(i, "hat", 0.3)
+        if Mx[i] > 0.3:
+            mark(i, "lead", float(Mx[i]))
+            # 色決め用の高さ: 中音域の明るさで代用
+            a = idx(T(0, i))
+            seg2 = body[a:a + int(0.05 * SR)]
+            if len(seg2) > 32:
+                spec_ = np.abs(np.fft.rfft(seg2 * np.hanning(len(seg2))))
+                f = np.fft.rfftfreq(len(seg2), 1 / SR)
+                events[i]["pitch"] = float((spec_ * f).sum() / (spec_.sum() + 1e-9))
+
+    # ---- 溜めとスタッター (サビの頭の音を刻む) ----
+    for bar, sec in enumerate(sections):
+        if bar == 0 or sec == "outro":
+            continue
+        prev = sections[bar - 1]
+        stutter_here = (sec == "chorus" and prev != "chorus") or bar in spec.get("stutter_bars", [])
+        if not stutter_here:
+            continue
+        tc = T(bar)
+        chop = body[idx(tc - 0.005): idx(tc + step * 0.9)].copy()
+        chop *= np.minimum(1, np.linspace(0, 10, len(chop))) * np.minimum(1, np.linspace(10, 0, len(chop)))
+        # 1拍前から 16分×2、32分×4 で刻んで、最後の16分は無音
+        a, b = idx(tc - 4 * step), idx(tc - 0.003)
+        body[a:b] = 0
+        drums.buf[a:b] *= 0.0
+        hits = [tc - 4 * step, tc - 3 * step] + [tc - 2 * step + k * step / 2 for k in range(2)]
+        for k, ht in enumerate(hits):
+            ln = int(step * (0.95 if k < 2 else 0.48) * SR)
+            i0 = idx(ht)
+            body[i0:i0 + ln] += chop[:ln] * (0.7 + 0.1 * k)
+            mark(int(round((ht - LEAD_IN) / step)), "vox", 1.0)
+
+    # ---- ミックス ----
+    duck = np.ones(N)
+    rel = int(0.16 * SR)
+    shape = 1 - 0.35 * np.exp(-np.arange(rel) / (0.05 * SR))
+    for kt in kick_times:
+        i = int(kt * SR)
+        j = min(N, i + rel)
+        duck[i:j] = np.minimum(duck[i:j], shape[: j - i])
+
+    mix = body * duck * 0.95 + drums.buf * 0.55 + fx.buf * 0.8
+    mix = np.tanh(mix * 1.2)
+    mix = highpass(mix, 25, 2)
+    peak = np.max(np.abs(mix)) or 1.0
+    mix = mix / peak * 0.93
+    end = min(N, int((LEAD_IN + n_src_bars * bar_len + TAIL) * SR))
+    mix = mix[:end]
+    fade = int(0.8 * SR)
+    mix[-fade:] *= np.linspace(1, 0, fade) ** 2
+
+    meta = dict(bpm=bpm, step=step, events=events, n_steps=(n_src_bars + 1) * 16, duration=len(mix) / SR,
+                sections=sections, bar_len=bar_len)
+    return mix, meta
+
+
+# ------------------------------------------------------------
 # 太鼓譜面
 #   k: d=ドン k=カッ D=大ドン K=大カッ r=連打 R=大連打 b=風船
 # ------------------------------------------------------------
@@ -1086,7 +1309,7 @@ def main():
     library = {"version": 3, "leadIn": LEAD_IN, "songs": [], "courses": []}
     report = []
     for spec in SONGS:
-        buf, meta = build_song(spec)
+        buf, meta = build_from_source(spec) if spec.get("source") else build_song(spec)
         dur = meta["duration"]
         assert MIN_SEC <= dur <= MAX_SEC, f"{spec['id']} の長さが範囲外: {dur:.1f}秒"
         audio = encode(buf, os.path.join(SONG_DIR, spec["id"]))
@@ -1119,16 +1342,18 @@ def main():
     for c in COURSES:
         cond = dict(c["conditions"])
         if cond.get("ROLL") == "auto":
-            # 連打は 1秒あたり8回、風船は割るのに必要な回数 を目安にする
-            need = 0
+            # 曲ごと: 連打は 1秒あたり7回、風船は割るのに必要な回数 を目安にする
+            per_stage = []
             for sid, diff in c["stages"]:
                 chart = next(ch for ch in songs_by_id[sid]["charts"] if ch["difficulty"] == diff)
+                need = 0
                 for n in chart["notes"]:
                     if n["k"] in "rR":
-                        need += (n["e"] - n["t"]) / 1000 * 8
+                        need += (n["e"] - n["t"]) / 1000 * 7
                     elif n["k"] == "b":
                         need += n["n"]
-            cond["ROLL"] = int(need)
+                per_stage.append(int(need) if need >= 1 else None)
+            cond["ROLL"] = per_stage
         library["courses"].append({
             "id": c["id"],
             "name": c["name"],

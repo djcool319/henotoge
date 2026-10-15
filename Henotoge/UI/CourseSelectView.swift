@@ -11,7 +11,7 @@ struct CourseSelectView: View {
             Background()
             ScrollView {
                 VStack(spacing: 14) {
-                    Text("3曲メドレー。可(GOOD)と不可(MISS)の回数が、それぞれ決められた数「未満」なら合格。皆伝は連打の回数も条件。")
+                    Text("3曲メドレー。魂ゲージ・可の数・不可の数、上のコースは曲ごとの連打数も条件。")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                         .frame(maxWidth: .infinity, alignment: .leading)
@@ -86,12 +86,21 @@ struct CourseCard: View {
             }
 
             HStack(spacing: 8) {
-                LimitChip(label: "可 GOOD", value: course.conditions.good.map { "< \($0)" } ?? "-",
+                if let g = course.conditions.gauge {
+                    LimitChip(label: "魂ゲージ", value: "\(g)%以上", color: .orange)
+                }
+                LimitChip(label: "可の数", value: course.conditions.good.map { "\($0)未満" } ?? "-",
                           color: Judgment.good.color)
-                LimitChip(label: "不可 MISS", value: course.conditions.miss.map { "< \($0)" } ?? "-",
+                LimitChip(label: "不可の数", value: course.conditions.miss.map { "\($0)未満" } ?? "-",
                           color: Judgment.miss.color)
-                if let roll = course.conditions.roll {
-                    LimitChip(label: "連打", value: "≥ \(roll)", color: Color(red: 1, green: 0.78, blue: 0.1))
+            }
+            if course.conditions.hasRoll {
+                HStack(spacing: 8) {
+                    ForEach(0..<course.stages.count, id: \.self) { i in
+                        LimitChip(label: "連打 \(["1st", "2nd", "3rd"][min(i, 2)])",
+                                  value: course.conditions.rollNeed(stage: i).map { "\($0)以上" } ?? "-",
+                                  color: Color(red: 1, green: 0.78, blue: 0.1))
+                    }
                 }
             }
 

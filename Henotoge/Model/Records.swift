@@ -58,8 +58,8 @@ final class Records: ObservableObject {
     @Published private(set) var best: [String: BestRecord] = [:]
     @Published private(set) var courses: [String: CourseRecord] = [:]
 
-    private let bestKey = "records.best.v2"
-    private let courseKey = "records.course.v2"
+    private let bestKey = "records.best.v3"
+    private let courseKey = "records.course.v3"
 
     private init() {
         let d = UserDefaults.standard

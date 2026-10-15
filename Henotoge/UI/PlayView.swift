@@ -51,6 +51,10 @@ struct PlayView: View {
         .ignoresSafeArea()
         .statusBarHidden(true)
         .persistentSystemOverlays(.hidden)
+        // 画面の端を叩いたときに、ホームバーやコントロールセンターの操作で反応が遅れないようにする
+        .defersSystemGestures(on: .all)
+        .onAppear { UIApplication.shared.isIdleTimerDisabled = true }
+        .onDisappear { UIApplication.shared.isIdleTimerDisabled = false }
     }
 
     private func start(size: CGSize) {
