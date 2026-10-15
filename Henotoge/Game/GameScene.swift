@@ -225,15 +225,15 @@ final class GameScene: SKScene {
     private func setupLayout() {
         let W = size.width
         let H = size.height
-        laneH = max(60, H * 0.18)
-        laneY = H * 0.64
+        laneH = max(64, H * 0.2)
+        laneY = H * 0.66
         stripH = max(14, H * 0.04)
-        laneStartX = W * 0.30
-        laneEndX = W * 0.91
+        laneStartX = W * 0.22
+        laneEndX = W
         judgeX = laneStartX + laneH * 0.62
         smallR = laneH * 0.27
         bigR = laneH * 0.40
-        boxRect = CGRect(x: W * 0.09, y: laneY - laneH / 2 - stripH, width: laneStartX - W * 0.09,
+        boxRect = CGRect(x: 0, y: laneY - laneH / 2 - stripH, width: laneStartX,
                          height: laneH + stripH)
 
         for layer in [bgLayer, laneLayer, barLayer, noteLayer, effectLayer, padLayer, frameLayer, hudLayer] {
@@ -256,20 +256,6 @@ final class GameScene: SKScene {
         deco.position = CGPoint(x: 0, y: topY)
         deco.alpha = 0.55
         bgLayer.addChild(deco)
-
-        // 左右の端の飾り
-        for (x, w) in [(CGFloat(0), W * 0.09), (laneEndX, W - laneEndX)] {
-            let side = SKSpriteNode(color: UIColor(red: 0.20, green: 0.68, blue: 0.95, alpha: 1),
-                                    size: CGSize(width: w - 4, height: laneH + stripH + 20))
-            side.anchorPoint = CGPoint(x: 0, y: 0.5)
-            side.position = CGPoint(x: x + 2, y: laneY - stripH / 2)
-            frameLayer.addChild(side)
-            let stripe = SKSpriteNode(color: UIColor(white: 1, alpha: 0.25),
-                                      size: CGSize(width: w - 4, height: 4))
-            stripe.anchorPoint = CGPoint(x: 0, y: 0.5)
-            stripe.position = CGPoint(x: x + 2, y: laneY + laneH * 0.3)
-            frameLayer.addChild(stripe)
-        }
 
         // レーン
         let lane = SKSpriteNode(color: Palette.lane, size: CGSize(width: laneEndX - laneStartX, height: laneH))
@@ -315,8 +301,8 @@ final class GameScene: SKScene {
         comboCaption.position = CGPoint(x: mini.position.x, y: mini.position.y - drumW * 0.22)
 
         // 魂ゲージ
-        let gx = W * 0.405
-        gaugeRect = CGRect(x: gx, y: topY + 4, width: W * 0.85 - gx, height: max(12, H * 0.035))
+        let gx = W * 0.40
+        gaugeRect = CGRect(x: gx, y: topY + 4, width: W * 0.91 - gx, height: max(12, H * 0.035))
         let back = SKSpriteNode(color: UIColor(red: 0.25, green: 0.08, blue: 0.05, alpha: 1), size: gaugeRect.size)
         back.anchorPoint = .zero
         back.position = gaugeRect.origin
@@ -599,7 +585,8 @@ final class GameScene: SKScene {
         }
         lastBig = nil
 
-        pixelsPerSecond = (laneEndX - judgeX) * CGFloat(stage.song.bpm) / 240.0 * CGFloat(GameSettings.scroll) * 0.9
+        // 標準 (ハイスピード x1.0) で 1小節 = 画面の横幅ぶん流れる
+        pixelsPerSecond = size.width * CGFloat(stage.song.bpm) / 240.0 * CGFloat(GameSettings.scroll)
 
         let lastNote = stage.chart.notes.map { max($0.time, $0.end) }.max() ?? 0
         stageEndTime = max(lastNote + 1.2, min(stage.song.duration, lastNote + 3.0))
@@ -1352,11 +1339,11 @@ final class GameScene: SKScene {
         return t
     }
 
-    /// 白いふち + 色の丸 + にっこり顔 の音符
+    /// 白いふち + 色の丸 の音符
     private func faceNoteTexture(radius: CGFloat, fill: UIColor) -> SKTexture {
         let d = radius * 2
         let size = CGSize(width: d, height: d)
-        let image = UIGraphicsImageRenderer(size: size).image { ctx in
+        let image = UIGraphicsImageRenderer(size: size).image { _ in
             let outer = CGRect(origin: .zero, size: size)
             UIColor(white: 0.1, alpha: 1).setFill()
             UIBezierPath(ovalIn: outer).fill()
@@ -1364,19 +1351,6 @@ final class GameScene: SKScene {
             UIBezierPath(ovalIn: outer.insetBy(dx: d * 0.04, dy: d * 0.04)).fill()
             fill.setFill()
             UIBezierPath(ovalIn: outer.insetBy(dx: d * 0.13, dy: d * 0.13)).fill()
-            // 目と口
-            let cg = ctx.cgContext
-            UIColor(white: 0.1, alpha: 1).setFill()
-            let eyeR = d * 0.055
-            for ex in [d * 0.36, d * 0.64] {
-                cg.fillEllipse(in: CGRect(x: ex - eyeR, y: d * 0.42 - eyeR, width: eyeR * 2, height: eyeR * 2))
-            }
-            cg.setStrokeColor(UIColor(white: 0.1, alpha: 1).cgColor)
-            cg.setLineWidth(max(1.5, d * 0.035))
-            cg.setLineCap(.round)
-            cg.addArc(center: CGPoint(x: d * 0.5, y: d * 0.53), radius: d * 0.09,
-                      startAngle: 0.15 * .pi, endAngle: 0.85 * .pi, clockwise: false)
-            cg.strokePath()
         }
         return SKTexture(image: image)
     }
