@@ -97,22 +97,50 @@ struct Song: Decodable, Identifiable {
     }
 }
 
+/// 段位の条件の数字 (赤合格と金合格)。JSON では 数字1つ か [赤, 金]
+struct Threshold: Decodable {
+    let red: Int
+    let gold: Int?
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.singleValueContainer()
+        if let v = try? c.decode(Int.self) {
+            red = v
+            gold = nil
+        } else {
+            let a = try c.decode([Int].self)
+            red = a.first ?? 0
+            gold = a.count > 1 ? a[1] : nil
+        }
+    }
+}
+
 /// 段位の合格条件 (本家の段位道場ふう)。nil は条件なし
 ///   gauge: 魂ゲージ (3曲通し) がこの % 以上
 ///   good / miss: 可・不可がそれぞれこの回数「未満」
 ///   roll: 曲ごとの連打数がこの回数「以上」
 struct CourseConditions: Decodable {
-    let gauge: Int?
-    let good: Int?
-    let miss: Int?
-    let roll: [Int?]?
+    let gaugeT: Threshold?
+    let goodT: Threshold?
+    let missT: Threshold?
+    let rollT: [Threshold?]?
 
     enum CodingKeys: String, CodingKey {
-        case gauge = "GAUGE"
-        case good = "GOOD"
-        case miss = "MISS"
-        case roll = "ROLL"
+        case gaugeT = "GAUGE"
+        case goodT = "GOOD"
+        case missT = "MISS"
+        case rollT = "ROLL"
     }
+
+    // 赤合格の数字
+    var gauge: Int? { gaugeT?.red }
+    var good: Int? { goodT?.red }
+    var miss: Int? { missT?.red }
+
+    // 金合格の数字 (なければ赤と同じ)
+    var gaugeGold: Int? { gaugeT.map { $0.gold ?? $0.red } }
+    var goodGold: Int? { goodT.map { $0.gold ?? $0.red } }
+    var missGold: Int? { missT.map { $0.gold ?? $0.red } }
 
     func limit(for j: Judgment) -> Int? {
         switch j {
@@ -122,14 +150,28 @@ struct CourseConditions: Decodable {
         }
     }
 
-    /// その曲の連打の条件
+    func goldLimit(for j: Judgment) -> Int? {
+        switch j {
+        case .good: return goodGold
+        case .miss: return missGold
+        case .great: return nil
+        }
+    }
+
+    /// その曲の連打の条件 (赤合格)
     func rollNeed(stage: Int) -> Int? {
-        guard let roll, stage < roll.count else { return nil }
-        return roll[stage]
+        guard let rollT, stage < rollT.count else { return nil }
+        return rollT[stage]?.red
+    }
+
+    /// その曲の連打の条件 (金合格)
+    func rollGold(stage: Int) -> Int? {
+        guard let rollT, stage < rollT.count, let t = rollT[stage] else { return nil }
+        return t.gold ?? t.red
     }
 
     var hasRoll: Bool {
-        roll?.contains { $0 != nil } ?? false
+        rollT?.contains { $0 != nil } ?? false
     }
 }
 

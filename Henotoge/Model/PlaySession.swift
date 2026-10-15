@@ -77,8 +77,21 @@ struct PlayResult {
         stages.count == request.stages.count && stages.allSatisfy(\.completed)
     }
 
-    /// 段位合格
+    /// 段位合格 (赤合格以上)
     var coursePassed: Bool {
         request.isCourse && !failed && !retired && allStagesCompleted
+    }
+
+    /// 段位の金合格 (すべての条件を金合格の数字で満たした)
+    var courseGold: Bool {
+        guard coursePassed, let cond = request.course?.conditions else { return false }
+        let c = totalCounts
+        if let g = cond.goodGold, c.good >= g { return false }
+        if let m = cond.missGold, c.miss >= m { return false }
+        if let g = cond.gaugeGold, (stages.last?.soulGauge ?? 0) * 100 < Double(g) - 0.001 { return false }
+        for (i, st) in stages.enumerated() {
+            if let need = cond.rollGold(stage: i), st.rollHits < need { return false }
+        }
+        return true
     }
 }

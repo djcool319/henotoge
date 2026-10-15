@@ -57,7 +57,7 @@ struct CourseCard: View {
                 Spacer()
                 if let record {
                     VStack(alignment: .trailing, spacing: 2) {
-                        Text(record.passed ? "合格" : "未合格")
+                        Text(record.gold == true ? "金合格" : (record.passed ? "合格" : "未合格"))
                             .font(.caption.bold())
                             .padding(.horizontal, 8)
                             .padding(.vertical, 3)
@@ -87,18 +87,18 @@ struct CourseCard: View {
 
             HStack(spacing: 8) {
                 if let g = course.conditions.gauge {
-                    LimitChip(label: "魂ゲージ", value: "\(g)%以上", color: .orange)
+                    LimitChip(label: "魂ゲージ", value: "\(g)%/\(course.conditions.gaugeGold ?? g)%", color: .orange)
                 }
-                LimitChip(label: "可の数", value: course.conditions.good.map { "\($0)未満" } ?? "-",
+                LimitChip(label: "可の数 (赤/金)", value: course.conditions.good.map { "<\($0)/<\(course.conditions.goodGold ?? $0)" } ?? "-",
                           color: Judgment.good.color)
-                LimitChip(label: "不可の数", value: course.conditions.miss.map { "\($0)未満" } ?? "-",
+                LimitChip(label: "不可の数 (赤/金)", value: course.conditions.miss.map { "<\($0)/<\(course.conditions.missGold ?? $0)" } ?? "-",
                           color: Judgment.miss.color)
             }
             if course.conditions.hasRoll {
                 HStack(spacing: 8) {
                     ForEach(0..<course.stages.count, id: \.self) { i in
                         LimitChip(label: "連打 \(["1st", "2nd", "3rd"][min(i, 2)])",
-                                  value: course.conditions.rollNeed(stage: i).map { "\($0)以上" } ?? "-",
+                                  value: course.conditions.rollNeed(stage: i).map { "\($0)/\(course.conditions.rollGold(stage: i) ?? $0)" } ?? "-",
                                   color: Color(red: 1, green: 0.78, blue: 0.1))
                     }
                 }

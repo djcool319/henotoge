@@ -91,13 +91,14 @@ private struct Tab: View {
     }
 }
 
-/// 条件のバー (達成なら虹色)
+/// 条件のバー (金合格なら虹色、赤合格なら桃色、失敗なら灰色)
 private struct ConditionBar: View {
     let title: String
     let need: String
     let value: String
     let ratio: Double
     let passed: Bool
+    var gold: Bool = false
 
     var body: some View {
         HStack(spacing: 10) {
@@ -110,7 +111,8 @@ private struct ConditionBar: View {
                 ZStack(alignment: .leading) {
                     RoundedRectangle(cornerRadius: 6).fill(Color(white: 0.2))
                     RoundedRectangle(cornerRadius: 6)
-                        .fill(passed ? AnyShapeStyle(rainbow) : AnyShapeStyle(Color(red: 1, green: 0.62, blue: 0.7)))
+                        .fill(gold ? AnyShapeStyle(rainbow)
+                              : AnyShapeStyle(passed ? Color(red: 1, green: 0.55, blue: 0.72) : Color(white: 0.55)))
                         .frame(width: max(0, geo.size.width * min(1, ratio)))
                     Text(value)
                         .font(.system(size: 22, weight: .black, design: .rounded))
@@ -150,9 +152,11 @@ private struct CourseResultView: View {
             HStack(alignment: .top, spacing: 18) {
                 VStack(spacing: 14) {
                     NamePlate(name: course.name)
-                    Text(result.coursePassed ? "合格" : "不合格")
+                    Text(result.courseGold ? "金合格" : (result.coursePassed ? "合格" : "不合格"))
                         .font(.system(size: 40, weight: .black, design: .rounded))
-                        .foregroundStyle(result.coursePassed ? AnyShapeStyle(rainbow) : AnyShapeStyle(Color(white: 0.75)))
+                        .foregroundStyle(result.courseGold ? AnyShapeStyle(rainbow)
+                                         : AnyShapeStyle(result.coursePassed ? Color(red: 1, green: 0.45, blue: 0.5)
+                                                                             : Color(white: 0.75)))
                         .shadow(color: .black.opacity(0.6), radius: 0, x: 2, y: 2)
                     Spacer(minLength: 0)
                 }
@@ -209,18 +213,22 @@ private struct CourseResultView: View {
             }
 
             if let g = cond.gauge {
-                ConditionBar(title: "魂ゲージ", need: "\(g)% 以上", value: "\(Int(finalGauge * 100))%",
-                             ratio: finalGauge, passed: finalGauge * 100 >= Double(g) - 0.001)
+                ConditionBar(title: "魂ゲージ", need: "\(g)% 以上 (金 \(cond.gaugeGold ?? g)%)",
+                             value: "\(Int(finalGauge * 100))%",
+                             ratio: finalGauge, passed: finalGauge * 100 >= Double(g) - 0.001,
+                             gold: finalGauge * 100 >= Double(cond.gaugeGold ?? g) - 0.001)
             }
             if let limit = cond.good {
                 let remain = max(0, limit - counts.good)
-                ConditionBar(title: "可の数", need: "\(limit) 未満", value: "\(remain)",
-                             ratio: Double(remain) / Double(limit), passed: counts.good < limit)
+                ConditionBar(title: "可の数", need: "\(limit) 未満 (金 \(cond.goodGold ?? limit))", value: "\(remain)",
+                             ratio: Double(remain) / Double(limit), passed: counts.good < limit,
+                             gold: counts.good < (cond.goodGold ?? limit))
             }
             if let limit = cond.miss {
                 let remain = max(0, limit - counts.miss)
-                ConditionBar(title: "不可の数", need: "\(limit) 未満", value: "\(remain)",
-                             ratio: Double(remain) / Double(limit), passed: counts.miss < limit)
+                ConditionBar(title: "不可の数", need: "\(limit) 未満 (金 \(cond.missGold ?? limit))", value: "\(remain)",
+                             ratio: Double(remain) / Double(limit), passed: counts.miss < limit,
+                             gold: counts.miss < (cond.missGold ?? limit))
             }
             if cond.hasRoll {
                 VStack(alignment: .leading, spacing: 6) {
@@ -240,15 +248,19 @@ private struct CourseResultView: View {
 
     private func rollChip(_ i: Int) -> some View {
         let need = cond.rollNeed(stage: i)
+        let gold = cond.rollGold(stage: i)
         let hits = i < result.stages.count ? result.stages[i].rollHits : 0
         let played = i < result.stages.count
-        let ok = need == nil || (played && hits >= need!)
+        let isGold = played && (gold.map { hits >= $0 } ?? true)
+        let isRed = played && (need.map { hits >= $0 } ?? true)
+        let fill: AnyShapeStyle = isGold ? AnyShapeStyle(rainbow)
+            : AnyShapeStyle(isRed ? Color(red: 1, green: 0.55, blue: 0.72) : Color(white: 0.55))
         return HStack(spacing: 6) {
             Text(order(i)).font(.caption.bold()).foregroundStyle(ink)
             ZStack(alignment: .leading) {
                 RoundedRectangle(cornerRadius: 4).fill(Color(white: 0.2))
                 RoundedRectangle(cornerRadius: 4)
-                    .fill(ok && played ? AnyShapeStyle(rainbow) : AnyShapeStyle(Color(red: 0.55, green: 0.85, blue: 1)))
+                    .fill(fill)
                     .frame(width: 90 * min(1, need.map { Double(hits) / Double(max(1, $0)) } ?? (played ? 1 : 0)))
                 Text(played ? "\(hits)" : "-")
                     .font(.system(size: 16, weight: .black, design: .rounded))

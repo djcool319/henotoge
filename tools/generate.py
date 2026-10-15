@@ -85,21 +85,22 @@ ARTIST = "henotoge sound team"
 
 # ------------------------------------------------------------
 # 段位認定 (3曲メドレー)
-#   conditions: GAUGE  魂ゲージ (3曲通し) がこの % 以上
+#   conditions: [赤合格, 金合格] の組で書く
+#               GAUGE  魂ゲージ (3曲通し) がこの % 以上
 #               GOOD / MISS  可・不可が それぞれ この回数「未満」
 #               ROLL  曲ごとの連打数がこの回数「以上」 ("auto" は譜面から曲ごとに決める)
 # ------------------------------------------------------------
 COURSES = [
     dict(id="dan1", name="初段", stages=[("s01", "EXTREME"), ("s02", "EXTREME"), ("s03", "EXTREME")],
-         conditions={"GAUGE": 70, "GOOD": 60, "MISS": 25}),
+         conditions={"GAUGE": [70, 90], "GOOD": [60, 30], "MISS": [25, 10]}),
     dict(id="dan2", name="三段", stages=[("s04", "EXTREME"), ("s05", "EXTREME"), ("s06", "EXTREME")],
-         conditions={"GAUGE": 75, "GOOD": 50, "MISS": 20}),
+         conditions={"GAUGE": [75, 92], "GOOD": [50, 25], "MISS": [20, 8]}),
     dict(id="dan3", name="五段", stages=[("s07", "EXTREME"), ("s08", "EXTREME"), ("s10", "EXTREME")],
-         conditions={"GAUGE": 80, "GOOD": 40, "MISS": 15, "ROLL": "auto"}),
+         conditions={"GAUGE": [80, 95], "GOOD": [40, 20], "MISS": [15, 6], "ROLL": "auto"}),
     dict(id="dan4", name="八段", stages=[("s11", "EXTREME"), ("s09", "INSANE"), ("s12", "INSANE")],
-         conditions={"GAUGE": 90, "GOOD": 30, "MISS": 10, "ROLL": "auto"}),
+         conditions={"GAUGE": [90, 98], "GOOD": [30, 15], "MISS": [10, 4], "ROLL": "auto"}),
     dict(id="dan5", name="皆伝", stages=[("s13", "INSANE"), ("s14", "INSANE"), ("s15", "INSANE")],
-         conditions={"GAUGE": 100, "GOOD": 20, "MISS": 5, "ROLL": "auto"}),
+         conditions={"GAUGE": [100, 100], "GOOD": [20, 10], "MISS": [5, 2], "ROLL": "auto"}),
 ]
 
 MAJOR = [0, 2, 4, 5, 7, 9, 11]
@@ -1303,6 +1304,34 @@ def encode(buf, path_base):
     return os.path.basename(m4a)
 
 
+def build_courses(library):
+    songs_by_id = {x["id"]: x for x in library["songs"]}
+    out = []
+    for c in COURSES:
+        cond = dict(c["conditions"])
+        if cond.get("ROLL") == "auto":
+            # 曲ごと: 連打は 1秒あたり7回、風船は割るのに必要な回数 を赤合格の目安に。金合格はその1.3倍
+            per_stage = []
+            for sid, diff in c["stages"]:
+                chart = next(ch for ch in songs_by_id[sid]["charts"] if ch["difficulty"] == diff)
+                need = 0
+                for n in chart["notes"]:
+                    if n["k"] in "rR":
+                        need += (n["e"] - n["t"]) / 1000 * 7
+                    elif n["k"] == "b":
+                        need += n["n"]
+                red = int(need)
+                per_stage.append([red, int(red * 1.3) + 1] if red >= 1 else None)
+            cond["ROLL"] = per_stage
+        out.append({
+            "id": c["id"],
+            "name": c["name"],
+            "stages": [{"song": s, "difficulty": d} for s, d in c["stages"]],
+            "conditions": cond,
+        })
+    return out
+
+
 def main():
     os.makedirs(SONG_DIR, exist_ok=True)
     make_se()
@@ -1338,28 +1367,7 @@ def main():
         })
         print(f"generated {spec['id']} ({dur:.1f}s)", file=sys.stderr)
 
-    songs_by_id = {x["id"]: x for x in library["songs"]}
-    for c in COURSES:
-        cond = dict(c["conditions"])
-        if cond.get("ROLL") == "auto":
-            # 曲ごと: 連打は 1秒あたり7回、風船は割るのに必要な回数 を目安にする
-            per_stage = []
-            for sid, diff in c["stages"]:
-                chart = next(ch for ch in songs_by_id[sid]["charts"] if ch["difficulty"] == diff)
-                need = 0
-                for n in chart["notes"]:
-                    if n["k"] in "rR":
-                        need += (n["e"] - n["t"]) / 1000 * 7
-                    elif n["k"] == "b":
-                        need += n["n"]
-                per_stage.append(int(need) if need >= 1 else None)
-            cond["ROLL"] = per_stage
-        library["courses"].append({
-            "id": c["id"],
-            "name": c["name"],
-            "stages": [{"song": s, "difficulty": d} for s, d in c["stages"]],
-            "conditions": cond,
-        })
+    library["courses"] = build_courses(library)
 
     with open(os.path.join(OUT_DIR, "library.json"), "w", encoding="utf-8") as f:
         json.dump(library, f, ensure_ascii=False, separators=(",", ":"))

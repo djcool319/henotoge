@@ -163,6 +163,7 @@ final class GameScene: SKScene {
     /// 魂ゲージのコマ
     private var gaugeCells: [SKSpriteNode] = []
     /// 条件ゲージの数字の影
+    private var barStates: [ObjectIdentifier: String] = [:]
     private var shadows: [ObjectIdentifier: SKLabelNode] = [:]
 
     // MARK: - 初期化
@@ -915,6 +916,8 @@ final class GameScene: SKScene {
             return false
         }
 
+        if request.isCourse { updateConditions() }
+
         if nextNormal >= normals.count && activeRolls.isEmpty && spawnRoll >= rolls.count && t >= stageEndTime {
             finishStage()
         }
@@ -1295,52 +1298,206 @@ final class GameScene: SKScene {
         shadows[ObjectIdentifier(label)]?.text = text
     }
 
-    private func updateConditions() {
-        guard let cond = request.course?.conditions else { return }
-        let total = courseCounts()
-        if let row = goodRow, let limit = cond.good {
-            setCountRow(row, remain: limit - total.good, limit: limit)
+    // MARK: - 段位の条件ゲージ (本家の段位道場の仕様にあわせた色と点滅)
+
+    private enum BarLook: Equatable {
+        case color(UIColor)
+        case rainbow
+    }
+
+    private enum Blink: String {
+        case none, slow, fast
+    }
+
+    private enum GaugeColor {
+        static let darkYellow = UIColor(red: 0.78, green: 0.62, blue: 0.05, alpha: 1)
+        static let yellow = UIColor(red: 1.0, green: 0.88, blue: 0.2, alpha: 1)
+        static let pink = UIColor(red: 1.0, green: 0.55, blue: 0.72, alpha: 1)
+        static let red = UIColor(red: 0.95, green: 0.2, blue: 0.2, alpha: 1)
+        static let gray = UIColor(white: 0.55, alpha: 1)
+    }
+
+    /// バーの見た目 (色・虹色・点滅) を変える。前と同じなら何もしない
+    private func style(_ bar: SKSpriteNode, _ look: BarLook, _ blink: Blink) {
+        let id = ObjectIdentifier(bar)
+        let key = "\(look)-\(blink.rawValue)"
+        if barStates[id] == key { return }
+        barStates[id] = key
+        switch look {
+        case .rainbow:
+            bar.texture = rainbowTexture()
+            bar.color = .white
+            bar.colorBlendFactor = 0
+        case .color(let c):
+            bar.texture = nil
+            bar.color = c
+            bar.colorBlendFactor = 1
         }
-        if let row = missRow, let limit = cond.miss {
-            setCountRow(row, remain: limit - total.miss, limit: limit)
-        }
-        if let row = rollRow {
-            let need = cond.rollNeed(stage: stageIndex)
-            row.need.text = need.map { "\($0) 以上" } ?? "条件なし"
-            setValue(row.value, "\(rollHits)")
-            let ratio = need.map { CGFloat(min(1, Double(rollHits) / Double(max(1, $0)))) } ?? 0
-            row.bar.size = CGSize(width: max(0, row.width * ratio), height: row.bar.size.height)
-            row.bar.color = (need.map { rollHits >= $0 } ?? false) ? UIColor(red: 1, green: 0.85, blue: 0.25, alpha: 1)
-                                                                   : UIColor(red: 0.55, green: 0.85, blue: 1, alpha: 1)
-            for (i, sb) in row.stageBars.enumerated() {
-                let hits: Int
-                if i < stageResults.count {
-                    hits = stageResults[i].rollHits
-                } else if i == stageIndex {
-                    hits = rollHits
-                } else {
-                    sb.value.text = ""
-                    sb.bar.size = CGSize(width: 0, height: sb.bar.size.height)
-                    continue
-                }
-                let n = cond.rollNeed(stage: i)
-                sb.value.text = "\(hits)"
-                let r = n.map { CGFloat(min(1, Double(hits) / Double(max(1, $0)))) } ?? 1
-                sb.bar.size = CGSize(width: sb.width * r, height: sb.bar.size.height)
-                sb.bar.color = (n.map { hits >= $0 } ?? true) ? UIColor(red: 1, green: 0.85, blue: 0.25, alpha: 1)
-                                                              : UIColor(red: 0.55, green: 0.85, blue: 1, alpha: 1)
-            }
+        bar.removeAction(forKey: "blink")
+        bar.alpha = 1
+        if blink != .none {
+            let d = blink == .fast ? 0.12 : 0.35
+            bar.run(.repeatForever(.sequence([.fadeAlpha(to: 0.3, duration: d), .fadeAlpha(to: 1, duration: d)])),
+                    withKey: "blink")
         }
     }
 
-    /// 残り回数のバー (本家みたいに減っていく)
-    private func setCountRow(_ row: CondRow, remain: Int, limit: Int) {
-        let r = max(0, remain)
-        row.need.text = "\(limit) 未満"
-        setValue(row.value, "\(r)")
-        let ratio = CGFloat(r) / CGFloat(max(1, limit))
-        row.bar.size = CGSize(width: max(0, row.width * ratio), height: row.bar.size.height)
-        row.bar.color = ratio <= 0.25 ? UIColor(red: 0.95, green: 0.25, blue: 0.25, alpha: 1) : Palette.condPink
+    private func setWidth(_ bar: SKSpriteNode, _ w: CGFloat) {
+        if abs(bar.size.width - w) > 0.5 {
+            bar.size = CGSize(width: max(0, w), height: bar.size.height)
+        }
+    }
+
+    /// 最後の曲の終盤 / 終了間際か
+    private var nearEnd: (late: Bool, veryLate: Bool) {
+        guard stageIndex == request.stages.count - 1, normals.count > 0 else { return (false, false) }
+        let progress = Double(stageCounts.total) / Double(normals.count)
+        return (progress >= 0.8, progress >= 0.95)
+    }
+
+    /// この曲で残っている連打の秒数 (風船も含む)
+    private func remainingRollSeconds(at t: Double) -> Double {
+        var sec = 0.0
+        for r in rolls where !r.done {
+            sec += max(0, r.note.end - max(t, r.note.time))
+        }
+        return sec
+    }
+
+    private func updateConditions() {
+        guard let cond = request.course?.conditions else { return }
+        let total = courseCounts()
+        if let row = goodRow, let red = cond.good {
+            updateDecreasing(row, count: total.good, red: red, gold: cond.goodGold ?? red)
+        }
+        if let row = missRow, let red = cond.miss {
+            updateDecreasing(row, count: total.miss, red: red, gold: cond.missGold ?? red)
+        }
+        if let row = rollRow {
+            updateRollRow(row, cond: cond)
+        }
+    }
+
+    /// 減っていくタイプ (可・不可の数)。残りの許容数をバーで出す
+    private func updateDecreasing(_ row: CondRow, count: Int, red: Int, gold: Int) {
+        let remain = max(0, red - count)
+        row.need.text = "\(red) 未満"
+        setValue(row.value, "\(remain)")
+        let ratio = Double(remain) / Double(max(1, red))
+        setWidth(row.bar, row.width * CGFloat(ratio))
+
+        if remain <= 0 {
+            style(row.bar, .color(GaugeColor.gray), .none)
+            return
+        }
+        let goldPossible = count < gold
+        let full = remain == red
+        // 20%以下、または (満タン以外で) 残り4以下は赤の点滅
+        if ratio <= 0.2 || (!full && remain <= 4) {
+            style(row.bar, .color(GaugeColor.red), .fast)
+            return
+        }
+        let look: BarLook
+        if ratio <= 0.3 {
+            look = .color(GaugeColor.red)
+        } else {
+            look = .color(goldPossible ? GaugeColor.pink : GaugeColor.yellow)
+        }
+        // 金合格がまだ取れる状態で終盤に入ったら点滅、終了間際はより速く
+        let end = nearEnd
+        let blink: Blink = (goldPossible && end.late) ? (end.veryLate ? .fast : .slow) : .none
+        style(row.bar, look, blink)
+    }
+
+    /// 増えていくタイプ (曲ごとの連打数)
+    private func updateRollRow(_ row: CondRow, cond: CourseConditions) {
+        let t = songTime()
+        let red = cond.rollNeed(stage: stageIndex)
+        let gold = cond.rollGold(stage: stageIndex) ?? red
+        row.need.text = red.map { "\($0) 以上" } ?? "条件なし"
+        setValue(row.value, "\(rollHits)")
+        if let red, let gold {
+            let (look, blink, ratio) = rollLook(hits: rollHits, red: red, gold: gold,
+                                                potential: remainingRollSeconds(at: t) * 20,
+                                                finished: false)
+            setWidth(row.bar, row.width * CGFloat(ratio))
+            style(row.bar, look, blink)
+        } else {
+            setWidth(row.bar, 0)
+        }
+
+        // 曲ごとの小さいバー
+        for (i, sb) in row.stageBars.enumerated() {
+            let hits: Int
+            let finished: Bool
+            if i < stageResults.count {
+                hits = stageResults[i].rollHits
+                finished = true
+            } else if i == stageIndex {
+                hits = rollHits
+                finished = false
+            } else {
+                sb.value.text = ""
+                setWidth(sb.bar, 0)
+                continue
+            }
+            sb.value.text = "\(hits)"
+            guard let r = cond.rollNeed(stage: i) else {
+                setWidth(sb.bar, sb.width)
+                style(sb.bar, .color(GaugeColor.pink), .none)
+                continue
+            }
+            let g = cond.rollGold(stage: i) ?? r
+            let (look, blink, ratio) = rollLook(hits: hits, red: r, gold: g,
+                                                potential: finished ? 0 : remainingRollSeconds(at: t) * 20,
+                                                finished: finished)
+            setWidth(sb.bar, sb.width * CGFloat(ratio))
+            style(sb.bar, look, finished ? .none : blink)
+        }
+    }
+
+    /// 増えていくタイプのバーの見た目
+    private func rollLook(hits: Int, red: Int, gold: Int, potential: Double, finished: Bool)
+        -> (BarLook, Blink, Double) {
+        if hits >= gold {
+            return (.rainbow, .none, 1)
+        }
+        if hits >= red {
+            // 金合格まで残りの 1/3 でゆっくり、2/3 で速く点滅
+            let span = max(1, gold - red)
+            let done = Double(hits - red) / Double(span)
+            let blink: Blink = done >= 2.0 / 3.0 ? .fast : (done >= 1.0 / 3.0 ? .slow : .none)
+            return (.color(GaugeColor.pink), blink, 1)
+        }
+        let ratio = Double(hits) / Double(max(1, red))
+        // もう連打が残っていなければ失敗
+        if finished || potential <= 0 && !rolls.contains(where: { !$0.done }) {
+            return (.color(GaugeColor.gray), .none, ratio)
+        }
+        // 残りの連打を毎秒20打で叩いても届かないなら赤く点滅
+        if Double(red - hits) > potential {
+            return (.color(GaugeColor.red), .fast, ratio)
+        }
+        let look: BarLook = .color(ratio < 0.5 ? GaugeColor.darkYellow : GaugeColor.yellow)
+        let blink: Blink = ratio >= 0.85 ? .slow : .none   // 合格条件の達成直前
+        return (look, blink, ratio)
+    }
+
+    private func rainbowTexture() -> SKTexture {
+        if let t = textures["rainbow"] { return t }
+        let size = CGSize(width: 256, height: 8)
+        let image = UIGraphicsImageRenderer(size: size).image { ctx in
+            let colors = [UIColor(red: 1, green: 0.4, blue: 0.7, alpha: 1), UIColor(red: 1, green: 0.6, blue: 0.2, alpha: 1),
+                          UIColor(red: 1, green: 0.95, blue: 0.2, alpha: 1), UIColor(red: 0.3, green: 0.95, blue: 0.5, alpha: 1),
+                          UIColor(red: 0.3, green: 0.85, blue: 1, alpha: 1), UIColor(red: 0.7, green: 0.45, blue: 1, alpha: 1)]
+                .map(\.cgColor) as CFArray
+            if let g = CGGradient(colorsSpace: CGColorSpaceCreateDeviceRGB(), colors: colors, locations: nil) {
+                ctx.cgContext.drawLinearGradient(g, start: .zero, end: CGPoint(x: size.width, y: 0), options: [])
+            }
+        }
+        let t = SKTexture(image: image)
+        textures["rainbow"] = t
+        return t
     }
 
     private func showJudgment(_ j: Judgment) {
