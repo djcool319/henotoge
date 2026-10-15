@@ -23,7 +23,10 @@ import sys
 import wave
 
 import numpy as np
-from scipy.signal import butter, sosfilt
+from scipy.signal import butter, fftconvolve, sosfilt
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import singer  # noqa: E402
 
 SR = 44100
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -67,7 +70,7 @@ SONGS = [
     dict(id="s12", title="Overdrive Festival", bpm=180, key=60, mode="major", style="denpa", bars=30,
          levels={"BASIC": 5, "EXTREME": 8, "INSANE": 9}),
     dict(id="s13", title="疾風怒濤ドラム", bpm=186, key=62, mode="minor", style="matsuri", bars=32,
-         levels={"BASIC": 5, "EXTREME": 8, "INSANE": 9}),
+         levels={"BASIC": 5, "EXTREME": 8, "INSANE": 10}),
     dict(id="s14", title="HENOTOGE MAX", bpm=192, key=61, mode="minor", style="hardcore", bars=34,
          levels={"BASIC": 6, "EXTREME": 9, "INSANE": 10}),
     dict(id="s15", title="終焉の大太鼓", bpm=200, key=59, mode="minor", style="dnb", bars=36,
@@ -79,6 +82,7 @@ ARTIST = "henotoge sound team"
 # ------------------------------------------------------------
 # 段位認定 (3曲メドレー)
 #   conditions: GOOD(可) と MISS(不可) が それぞれ この回数「未満」なら合格
+#               ROLL があれば、連打をこの回数「以上」叩くことも条件 ("auto" は譜面から自動で決める)
 # ------------------------------------------------------------
 COURSES = [
     dict(id="dan1", name="初段", stages=[("s01", "EXTREME"), ("s02", "EXTREME"), ("s03", "EXTREME")],
@@ -90,7 +94,7 @@ COURSES = [
     dict(id="dan4", name="八段", stages=[("s11", "EXTREME"), ("s09", "INSANE"), ("s12", "INSANE")],
          conditions={"GOOD": 45, "MISS": 12}),
     dict(id="dan5", name="皆伝", stages=[("s13", "INSANE"), ("s14", "INSANE"), ("s15", "INSANE")],
-         conditions={"GOOD": 40, "MISS": 8}),
+         conditions={"GOOD": 30, "MISS": 5, "ROLL": "auto"}),
 ]
 
 MAJOR = [0, 2, 4, 5, 7, 9, 11]
@@ -287,6 +291,111 @@ def lead_tone(freq, dur, rng, bright=1.0):
 
 
 # ------------------------------------------------------------
+# 歌 (声の種類と歌詞)。歌詞は かなで書く (1文字 = 1音、小さい ゃゅょ はまとめて1音)
+#   verse: Aメロ (2行ずつ使う)、chorus: サビ (4行をくり返す。1行目と3行目は同じフレーズで中毒性を出す)
+# ------------------------------------------------------------
+VOCALS = {
+    "s01": ("woman",
+            ["ちょうちん ゆれる よるの みち", "たいこの おとが よんでいる",
+             "ゆかた ひるがえし かけだせば", "きみの えがおが ひかってる"],
+            ["どんどこ どんどこ どんどこ どん", "わっしょい わっしょい ヘイ ヘイ ヘイ",
+             "どんどこ どんどこ どんどこ どん", "おまつり さわいで ヘイ ヘイ ヘイ"]),
+    "s02": ("woman",
+            ["あさの ひかりが まどを たたく", "くつひも むすんで とびだそう",
+             "あおい そらへ てを のばして", "きのうの なみだは おいてくの"],
+            ["サニー サニー ポップ ポップ ラッシュ", "はしれ はしれ もっと はやく",
+             "サニー サニー ポップ ポップ ラッシュ", "わらって わらって イェイ イェイ イェイ"]),
+    "s03": ("girl",
+            ["うさぎの みみが ぴょこんと たって", "あめの あとには にじの はし",
+             "ポケット いっぱい キャンディ つめて", "パレード はじまる あいずだよ"],
+            ["ぴょんぴょん ぴょんぴょん ぴょんぴょんぴょん", "うさうさ パレード はじまるよ",
+             "ぴょんぴょん ぴょんぴょん ぴょんぴょんぴょん", "みみみみ みみみみ ぴょこぴょこりん"]),
+    "s04": ("woman",
+            ["ネオンの まちに まよいこんで", "よるの かぜが ささやいた",
+             "ひかりの なみに とびこめば", "ふたりの ステップ そろってく"],
+            ["ネオン ネオン ビート ビート", "ひかれ ひかれ パレード",
+             "ネオン ネオン ビート ビート", "おどれ おどれ あさまで"]),
+    "s05": ("girl",
+            ["ねこまんま たべたら げんき いっぱい", "しっぽを ふりふり おさんぽだ",
+             "まどべで ひなたぼっこ したら", "きょうも にゃんだか いいきぶん"],
+            ["にゃんにゃん にゃんにゃん にゃんにゃんにゃん", "ねこまんま ダンス くるりんぱ",
+             "にゃんにゃん にゃんにゃん にゃんにゃんにゃん", "おなかが ぺこぺこ にゃにゃにゃにゃにゃ"]),
+    "s06": ("girl",
+            ["ポケットの なかの ちいさな ほし", "なめたら からだが うきあがる",
+             "カウントダウンで めを とじて", "ゆめの せかいへ ひとっとび"],
+            ["ロケット ロケット キャンディ キャンディ", "はじけて はじけて ポン ポン ポン",
+             "ロケット ロケット キャンディ キャンディ", "とんでけ とんでけ スリー ツー ワン"]),
+    "s07": ("woman",
+            ["やたいの けむりが そらに のぼる", "わたあめ ふたつ てに もって",
+             "はなびの あいずが なりひびく", "こころの たいこも うちならせ"],
+            ["わっしょい わっしょい よまつりだ", "ハイ ハイ ハイ ハイ テンション あげろ",
+             "わっしょい わっしょい よまつりだ", "あさまで さわげ ソイヤ ソイヤ"]),
+    "s08": ("man",
+            ["やまの おくから やってきた", "はっぱ いちまい あたまに のせ",
+             "ばけて ばかして まちを ゆけば", "だれも おいらに おいつけない"],
+            ["ぽんぽこ ぽんぽこ ターボ たぬき", "ブン ブン ブン ブン ぶっとばせ",
+             "ぽんぽこ ぽんぽこ ターボ たぬき", "だれにも とめられ ないんだぜ"]),
+    "s09": ("woman",
+            ["くろい くもが うずを まいて", "いなずま はしる よるの そら",
+             "たいこを うてば かぜが ふく", "いかずちの おとが ちを ゆらす"],
+            ["ゴロゴロ ゴロゴロ らいじんさま", "ドン ドン ドン ドン ブレイク ブレイク",
+             "ゴロゴロ ゴロゴロ らいじんさま", "ピカッと ひかって ドドドドン"]),
+    "s10": ("girl",
+            ["かわもに うかぶ ちいさな あかり", "ねがいを こめて ながしたの",
+             "ほしの うみへと ゆれながら", "とおい あしたを てらしてる"],
+            ["ランラン ランタン ハイパー ランタン", "きらきら ゆらゆら そらへ とべ",
+             "ランラン ランタン ハイパー ランタン", "ねがいを こめて ラララララ"]),
+    "s11": ("man",
+            ["もえる ほのおを むねに だいて", "スタート ラインに たちあがる",
+             "うしろは もう ふりむかない", "まえだけ みつめて かけだせ"],
+            ["ダッシュ ダッシュ ぐれん ダッシュ", "もやせ もやせ ハートを もやせ",
+             "ダッシュ ダッシュ ぐれん ダッシュ", "ゴール まで ノン ストップ"]),
+    "s12": ("girl",
+            ["ボリューム いっぱい あげちゃって", "あたまの なかまで おまつりだ",
+             "ペンライト ふって さけんだら", "せかいが まるごと まわりだす"],
+            ["オーバー オーバー ドライブ ドライブ", "フェス フェス フェス フェス フェスティバル",
+             "オーバー オーバー ドライブ ドライブ", "みんなで ジャンプ いち に の さん"]),
+    "s13": ("woman",
+            ["かぜを きりさき ばちを ふる", "あせが ひかって とびちった",
+             "なみの ように せまる おと", "ひとつ のこらず うちぬけ"],
+            ["たたけ たたけ しっぷう どとう", "ドドドド カカカカ ドドドドン",
+             "たたけ たたけ しっぷう どとう", "こころの ままに うちならせ"]),
+    "s14": ("man",
+            ["ここまで きたなら もう にげない", "ゆびさき ふるえる げんかいち",
+             "ふかく いきを すいこんで", "さいごの ステージ たちむかえ"],
+            ["へのとげ へのとげ マックス マックス", "ぶちぬけ ぶちぬけ ゲンカイ こえろ",
+             "へのとげ へのとげ マックス マックス", "さいごの さいごまで たたきこめ"]),
+    "s15": ("man",
+            ["せかいの おわりに ひびく おと", "おおだいこが うなりを あげる",
+             "くずれる そらの まんなかで", "さいごの リズムを きざみこめ"],
+            ["ドン ドン ドン ドン おおだいこ", "しゅう えん しゅう えん うちならせ",
+             "ドン ドン ドン ドン おおだいこ", "せかいの おわりに ひびかせろ"]),
+}
+
+
+def fit_onsets(template, count, grid):
+    """リズムの型 (2小節=32ステップ) を、歌詞の音の数に合わせて増やしたり減らしたりする"""
+    def prio(x):
+        return (x % 8 == 0) * 3 + (x % 4 == 0) * 2 + (x % 2 == 0)
+
+    s = sorted({x for x in template if x % grid == 0 and x <= 28})
+    if 0 not in s:
+        s.insert(0, 0)
+    while len(s) > count:
+        cand = [x for x in s if x != 0]
+        x = min(cand, key=lambda v: (prio(v), -v))
+        s.remove(x)
+    while len(s) < count:
+        free = [c for c in range(0, 29, grid) if c not in s]
+        if not free:
+            break
+        best = max(free, key=lambda c: (min(abs(c - v) for v in s), prio(c)))
+        s.append(best)
+        s.sort()
+    return s
+
+
+# ------------------------------------------------------------
 # 構成
 # ------------------------------------------------------------
 def arrangement(bars):
@@ -408,6 +517,54 @@ def build_song(spec):
     kick_times = []
     last_pitch = key + 12
     lead_lo, lead_hi = key + 7, key + 26
+
+    voice, verse_lines, chorus_lines = VOCALS[spec["id"]]
+    v_lo, v_hi = singer.VOICES[voice][2]
+    vocal_phrases = []  # (歌詞の音, 音符)
+    sec_start = 0
+    verse_count = -1
+    sing_last = (v_lo + v_hi) // 2
+    grid = 2 if bpm >= 150 else 1
+    chorus_anchor = (v_lo + v_hi) // 2 + 3
+
+    def vocal_phrase(bar, line, line_idx, sec):
+        nonlocal sing_last
+        morae = singer.split_morae(line)
+        if sec == "chorus" and line_idx % 2 == 0:
+            # サビの決めフレーズは毎回同じ高さから歌い出す (くり返しで耳に残す)
+            sing_last = chorus_anchor
+        if sec == "chorus":
+            r1, r2 = (hook_rhythm, hook_rhythm2) if line_idx % 2 == 0 else (hook_rhythm2, hook_rhythm)
+            cont = hook_contour if line_idx % 2 == 0 else hook_contour2
+            lo, hi = v_lo + 3, v_hi
+        else:
+            r1, r2 = verse_rhythm, verse_rhythm
+            cont = verse_contour
+            lo, hi = v_lo, v_hi - 4
+        template = [i for i, ch in enumerate(r1) if ch == "x"] + [16 + i for i, ch in enumerate(r2) if ch == "x"]
+        onsets = fit_onsets(template, len(morae), grid)
+        morae = morae[: len(onsets)]
+        pool = [p for p in penta_notes + [x + 12 for x in penta_notes] if lo <= p <= hi]
+        pool = sorted(set(pool))
+        cur = nearest(pool, sing_last)
+        notes = []
+        for k, st in enumerate(onsets):
+            b = bar + st // 16
+            ch = chord_notes(b)
+            chord_pool = sorted({c + 12 * o for c in ch for o in range(-2, 3) if lo <= c + 12 * o <= hi}) or pool
+            if k > 0:
+                idx = pool.index(nearest(pool, cur)) + cont[k % len(cont)]
+                cur = pool[max(0, min(len(pool) - 1, idx))]
+            if st % 8 == 0 or k == len(onsets) - 1:
+                cur = nearest(chord_pool, cur)
+            nxt_st = onsets[k + 1] if k + 1 < len(onsets) else 30
+            t = LEAD_IN + (bar * 16 + st) * step
+            notes.append((t, (nxt_st - st) * step, cur))
+            mark(bar * 16 + st, "lead", 1.0)
+            events[bar * 16 + st]["pitch"] = cur
+        if notes:
+            sing_last = notes[-1][2]
+        vocal_phrases.append((morae, notes))
 
     for bar, sec in enumerate(sections):
         t0 = LEAD_IN + bar * bar_len
@@ -565,31 +722,85 @@ def build_song(spec):
                 plucks.add(t0 + s * step, pluck(midi_hz(p), step * 2), 0.22)
                 mark(base + s, "arp", 0.4)
 
-        # ---- メロディ ----
+        # ---- 歌 ----
+        if sec != prev:
+            sec_start = bar
+            if sec == "verse":
+                verse_count += 1
+        rel = bar - sec_start
+        sung = False
+        if sec in ("verse", "chorus") and rel % 2 == 0 and nxt == sec:
+            k = rel // 2
+            if sec == "chorus":
+                line = chorus_lines[k % len(chorus_lines)]
+                vocal_phrase(bar, line, k, sec)
+            else:
+                idx = (verse_count * 2 + k) % len(verse_lines)
+                vocal_phrase(bar, verse_lines[idx], idx, sec)
+            sung = True
+        elif sec in ("verse", "chorus") and rel % 2 == 1:
+            sung = True  # 2小節フレーズの後半
+
+        # ---- 楽器のメロディ (歌がないところ) ----
         melody = []
-        if sec == "chorus":
-            phrase = (bar - sections.index("chorus")) % 4 if "chorus" in sections else 0
-            rhythm = hook_rhythm if phrase in (0, 2) else hook_rhythm2
-            cont = hook_contour if phrase in (0, 2) else hook_contour2
-            melody = realize(rhythm, cont, bar, last_pitch, lead_lo + 5, lead_hi, end_on_root=(phrase == 3))
-        elif sec == "verse":
-            melody = realize(verse_rhythm, verse_contour, bar, last_pitch, lead_lo, lead_hi - 5,
-                             end_on_root=(bar % 2 == 1))
+        if not sung and sec in ("chorus", "verse"):
+            melody = realize(hook_rhythm, hook_contour, bar, last_pitch, lead_lo + 5, lead_hi, end_on_root=True)
         elif sec == "break" and bar % 2 == 0:
             melody = realize(hook_rhythm, hook_contour, bar, last_pitch, lead_lo, lead_hi - 3)
-        for s, p, ln in melody:
+        for s_, p, ln in melody:
             dur = ln * step * 0.9
-            sig = lead_tone(midi_hz(p), dur, rng)
-            lead.add(t0 + s * step, sig, 0.3 if sec == "chorus" else 0.24)
-            if sec == "chorus":
-                lead.add(t0 + s * step, lead_tone(midi_hz(p + 12), dur, rng, 0.5), 0.09)
-            mark(base + s, "lead", 1.0)
-            events[base + s]["pitch"] = p
+            lead.add(t0 + s_ * step, lead_tone(midi_hz(p), dur, rng), 0.26)
+            mark(base + s_, "lead", 1.0)
+            events[base + s_]["pitch"] = p
             last_pitch = p
 
         # ---- ビルドの盛り上げ ----
         if sec == "build" and nxt != "build":
             fx.add(t0, riser(rng, bar_len), 0.9)
+
+    # ---- 歌を合成 ----
+    vocals = Bus(N)
+    for morae, notes in vocal_phrases:
+        if not notes:
+            continue
+        y, vt0 = singer.sing_phrase(morae, notes, voice)
+        vocals.add(vt0, y, 1.0)
+    v = highpass(vocals.buf, 140, 2)
+    v = lowpass(v, 10000, 2)
+    vp = np.max(np.abs(v)) or 1.0
+    v = np.tanh(v / vp * 1.6) / np.tanh(1.6)
+    # リバーブ (減衰するノイズで畳み込む)
+    ir_len = int(1.1 * SR)
+    ir = rng.standard_normal(ir_len) * np.exp(-np.arange(ir_len) / (0.25 * SR))
+    ir = lowpass(ir, 5000) * 0.02
+    v_wet = fftconvolve(v, ir)[: N]
+    vocal_mix = v * 0.55 + v_wet
+
+    # ---- サビ直前のボーカル・スタッター (サビの頭の声を細かく刻んで溜める) ----
+    stutter = np.zeros(N)
+    for bar, sec in enumerate(sections):
+        if sec != "chorus" or bar == 0 or sections[bar - 1] == "chorus":
+            continue
+        tc = LEAD_IN + bar * bar_len
+        a = int((tc - 0.01) * SR)
+        b = int((tc + step * 0.9) * SR)
+        if b > N or a < 0:
+            continue
+        chop = vocal_mix[a:b].copy()
+        if np.max(np.abs(chop)) < 1e-4:
+            continue
+        chop *= np.minimum(1, np.linspace(0, 8, len(chop))) * np.minimum(1, np.linspace(8, 0, len(chop)))
+        # 1拍前から16分で4回、最後の半拍は32分で4回
+        hits = [tc - 8 * step + k * step for k in range(4)] + [tc - 4 * step + k * step / 2 for k in range(8)]
+        for k, ht in enumerate(hits):
+            i = int(ht * SR)
+            seg = chop[: int(step * (0.95 if k < 4 else 0.48) * SR)]
+            j = min(N, i + len(seg))
+            stutter[i:j] += seg[: j - i] * (0.6 + 0.4 * k / len(hits))
+            si = int(round((ht - LEAD_IN) / step))
+            if k < 4 or k % 2 == 0:
+                mark(si, "vox", 1.0)
+    vocal_mix = vocal_mix + stutter
 
     # ---- ミックス ----
     # キックに合わせて他の音を沈ませる (サイドチェイン)
@@ -605,7 +816,17 @@ def build_song(spec):
              + lowpass(chords.buf, 6000) * 1.25
              + lowpass(lead.buf, 7500) * 1.8
              + plucks.buf * 1.4) * duck
-    mix = drums.buf * 0.8 + music + fx.buf
+    inst = drums.buf * 0.8 + music * 0.85 + fx.buf
+    # サビの直前は一瞬だけ楽器を止めて、声だけにする (溜め)
+    for bar, sec in enumerate(sections):
+        if sec == "chorus" and bar > 0 and sections[bar - 1] != "chorus":
+            tc = LEAD_IN + bar * bar_len
+            a = int((tc - 2 * step) * SR)
+            b = int((tc - 0.004) * SR)
+            gate = np.linspace(1, 0, min(400, b - a))
+            inst[a:a + len(gate)] *= gate
+            inst[a + len(gate):b] = 0
+    mix = inst + vocal_mix
     # ディレイ
     d = int(beat * 0.75 * SR)
     wet = np.zeros_like(mix)
@@ -632,9 +853,9 @@ def build_song(spec):
 #   k: d=ドン k=カッ D=大ドン K=大カッ r=連打 R=大連打 b=風船
 # ------------------------------------------------------------
 WEIGHT = {"kick": 3.0, "snare": 3.0, "taiko": 2.5, "rim": 1.5, "crash": 2.0, "lead": 2.4, "bass": 1.0,
-          "arp": 0.7, "hat": 0.5, "roll": 1.2, "finale": 9.0}
+          "arp": 0.7, "hat": 0.5, "roll": 1.2, "finale": 9.0, "vox": 1.5}
 
-NPS = {1: 1.2, 2: 1.6, 3: 2.1, 4: 2.7, 5: 3.3, 6: 4.0, 7: 4.8, 8: 5.8, 9: 6.9, 10: 8.3}
+NPS = {1: 1.2, 2: 1.6, 3: 2.1, 4: 2.7, 5: 3.3, 6: 4.0, 7: 4.8, 8: 5.8, 9: 7.0, 10: 8.8}
 MIN_GAP = {1: 0.45, 2: 0.33, 3: 0.25, 4: 0.2, 5: 0.16, 6: 0.13, 7: 0.105, 8: 0.085, 9: 0.072, 10: 0.064}
 
 
@@ -671,12 +892,21 @@ def make_chart(spec, meta, difficulty, level):
         last = bar + 1 >= len(sections) or sections[bar + 1] != "build"
         if not last:
             continue
-        use_roll = level <= 7 or rng.random() < 0.35
+        use_roll = level <= 7 or insane or rng.random() < 0.35
         if not use_roll:
             continue
         start = bar * 16 + (0 if level <= 4 else 8)
         end = bar * 16 + 14
-        if level <= 6 and balloons < 1 and rng.random() < 0.6:
+        if insane and level >= 9:
+            # 最高難度: 1回目は割るのが大変な風船、2回目以降は大連打
+            start = bar * 16
+            if balloons < 1:
+                dur = T(end) - T(start)
+                notes.append({"k": "b", "t": ms(start), "e": ms(end), "n": max(12, int(dur * 10.5))})
+                balloons += 1
+            else:
+                notes.append({"k": "R", "t": ms(start), "e": ms(end)})
+        elif level <= 6 and balloons < 1 and rng.random() < 0.6:
             dur = T(end) - T(start)
             hits = max(4, int(dur * (3.5 + level * 0.7)))
             notes.append({"k": "b", "t": ms(start), "e": ms(end), "n": hits})
@@ -688,7 +918,7 @@ def make_chart(spec, meta, difficulty, level):
 
     # ---- 普通の音符の候補 ----
     play_sec = meta["n_steps"] * step
-    target = int(NPS[level] * play_sec * (1.12 if insane else 1.0))
+    target = int(NPS[level] * play_sec * (1.2 if insane else 1.0))
     min_gap = max(1, int(math.ceil(MIN_GAP[level] / step - 1e-6)))
 
     cands = []
@@ -766,8 +996,50 @@ def make_chart(spec, meta, difficulty, level):
         k = color.upper() if big else color
         notes.append({"k": k, "t": ms(si)})
 
+    # ---- 高難度: 24分の高速ロール (左右交互に叩き分ける連続音符) ----
+    if level >= 9 and difficulty == "INSANE":
+        notes = add_bursts(notes, meta, level, rng)
+
     notes.sort(key=lambda n: n["t"])
     return notes
+
+
+BURST_PATTERNS = ["dkdkd", "ddkdd", "kkdkk", "dkkdk", "ddkkd", "dkdkdkd", "ddkddkd", "kdkdkdk", "dddkddd"]
+
+
+def add_bursts(notes, meta, level, rng):
+    """4小節ごとのつなぎ目などに 24分音符の連打を差し込む"""
+    step = meta["step"]
+    beat = step * 4
+    sections = meta["sections"]
+    spans = []
+    for bar, sec in enumerate(sections):
+        if sec not in ("verse", "chorus"):
+            continue
+        last_of_phrase = bar % 4 == 3
+        extra = level >= 10 and sec == "chorus" and bar % 2 == 1
+        if not (last_of_phrase or extra):
+            continue
+        length = 7 if (level >= 10 and last_of_phrase) else 5
+        start_beat = 2 if length == 7 else 3
+        t_start = LEAD_IN + bar * beat * 4 + start_beat * beat
+        pats = [p for p in BURST_PATTERNS if len(p) == length]
+        pat = pats[int(rng.integers(0, len(pats)))]
+        times = [t_start + k * beat / 6 for k in range(length)]
+        spans.append((times[0] - step * 0.9, times[-1] + step * 0.9, times, pat))
+
+    def inside(ms):
+        t = ms / 1000
+        return any(a <= t <= b for a, b, _, _ in spans)
+
+    def in_roll(n):
+        return n["k"] in "rRb" and any(not (n["e"] / 1000 < a or n["t"] / 1000 > b) for a, b, _, _ in spans)
+
+    kept = [n for n in notes if not (n["k"] in "dkDK" and inside(n["t"])) and not in_roll(n)]
+    for _, _, times, pat in spans:
+        for t, c in zip(times, pat):
+            kept.append({"k": c, "t": int(round(t * 1000))})
+    return kept
 
 
 # ------------------------------------------------------------
@@ -843,12 +1115,25 @@ def main():
         })
         print(f"generated {spec['id']} ({dur:.1f}s)", file=sys.stderr)
 
+    songs_by_id = {x["id"]: x for x in library["songs"]}
     for c in COURSES:
+        cond = dict(c["conditions"])
+        if cond.get("ROLL") == "auto":
+            # 連打は 1秒あたり8回、風船は割るのに必要な回数 を目安にする
+            need = 0
+            for sid, diff in c["stages"]:
+                chart = next(ch for ch in songs_by_id[sid]["charts"] if ch["difficulty"] == diff)
+                for n in chart["notes"]:
+                    if n["k"] in "rR":
+                        need += (n["e"] - n["t"]) / 1000 * 8
+                    elif n["k"] == "b":
+                        need += n["n"]
+            cond["ROLL"] = int(need)
         library["courses"].append({
             "id": c["id"],
             "name": c["name"],
             "stages": [{"song": s, "difficulty": d} for s, d in c["stages"]],
-            "conditions": c["conditions"],
+            "conditions": cond,
         })
 
     with open(os.path.join(OUT_DIR, "library.json"), "w", encoding="utf-8") as f:

@@ -11,7 +11,7 @@ struct CourseSelectView: View {
             Background()
             ScrollView {
                 VStack(spacing: 14) {
-                    Text("3曲メドレー。可(GOOD)と不可(MISS)の回数が、それぞれ決められた数「未満」なら合格。")
+                    Text("3曲メドレー。可(GOOD)と不可(MISS)の回数が、それぞれ決められた数「未満」なら合格。皆伝は連打の回数も条件。")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                         .frame(maxWidth: .infinity, alignment: .leading)
@@ -90,6 +90,9 @@ struct CourseCard: View {
                           color: Judgment.good.color)
                 LimitChip(label: "不可 MISS", value: course.conditions.miss.map { "< \($0)" } ?? "-",
                           color: Judgment.miss.color)
+                if let roll = course.conditions.roll {
+                    LimitChip(label: "連打", value: "≥ \(roll)", color: Color(red: 1, green: 0.78, blue: 0.1))
+                }
             }
 
             Button(action: onStart) {

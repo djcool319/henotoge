@@ -136,6 +136,14 @@ struct ResultView: View {
                 Text("連打").font(.headline).foregroundStyle(Color(red: 1, green: 0.78, blue: 0.1))
                 Spacer()
                 Text("\(result.totalRollHits)").font(.system(.title3, design: .monospaced).bold())
+                if let need = cond?.roll {
+                    Text("≥ \(need)")
+                        .font(.system(.footnote, design: .monospaced))
+                        .foregroundStyle(result.totalRollHits < need ? Lamp.failed.color : .secondary)
+                        .frame(width: 52, alignment: .leading)
+                } else if cond != nil {
+                    Text("").frame(width: 52)
+                }
             }
             if !result.request.isCourse, let stage = result.stages.first {
                 HStack {

@@ -57,7 +57,7 @@ struct HowToPlayView: View {
                             .font(.subheadline.monospacedDigit())
                         Text("魂ゲージを曲の最後に80%以上にできればクリア。")
                             .font(.subheadline)
-                        Text("段位認定は3曲メドレー。可と不可の回数がそれぞれ決められた数「未満」なら合格。残りの回数は太鼓の左右に出ます。")
+                        Text("段位認定は3曲メドレー。可と不可の回数がそれぞれ決められた数「未満」なら合格 (皆伝は連打の回数も)。残りの回数は太鼓の左右に出ます。")
                             .font(.subheadline)
                             .foregroundStyle(.secondary)
                     }

@@ -148,6 +148,7 @@ final class GameScene: SKScene {
     }
     private var leftPanel: Panel?
     private var rightPanel: Panel?
+    private var rollPanel: Panel?
 
     // MARK: - 初期化
 
@@ -286,18 +287,29 @@ final class GameScene: SKScene {
 
     private func setupDrum() {
         let W = size.width
-        let H = size.height
-        let bottomTop = laneY - laneH / 2 - 8
-        drumR = max(50, min(bottomTop * 0.47, W * 0.17))
-        drumCenter = CGPoint(x: W / 2, y: bottomTop / 2)
-        faceR = drumR * 0.76
+        let bottomTop = laneY - laneH / 2 - 6
+        // 画面の下にはみ出すくらい大きな太鼓を、下の真ん中に置く
+        drumR = max(80, min(W * 0.27, bottomTop * 1.05))
+        drumCenter = CGPoint(x: W / 2, y: bottomTop - drumR)
+        faceR = drumR * 0.72
 
         let rim = SKShapeNode(circleOfRadius: drumR)
         rim.fillColor = Palette.rim
         rim.strokeColor = .black
-        rim.lineWidth = 4
+        rim.lineWidth = 5
         rim.position = drumCenter
         drumLayer.addChild(rim)
+
+        // ふちの金具っぽい点
+        for k in 0..<16 {
+            let a = CGFloat(k) / 16 * .pi * 2
+            let dot = SKShapeNode(circleOfRadius: max(2, drumR * 0.018))
+            dot.fillColor = UIColor(red: 0.9, green: 0.75, blue: 0.4, alpha: 1)
+            dot.strokeColor = .clear
+            let rr = (drumR + faceR) / 2
+            dot.position = CGPoint(x: drumCenter.x + cos(a) * rr, y: drumCenter.y + sin(a) * rr)
+            drumLayer.addChild(dot)
+        }
 
         let face = SKShapeNode(circleOfRadius: faceR)
         face.fillColor = Palette.skin
@@ -336,24 +348,46 @@ final class GameScene: SKScene {
             rimFlash.append(r)
         }
 
+        // 面の見えている部分のまん中あたりに「ドン」、ふちに「カッ」
+        let visibleTop = drumCenter.y + faceR
         let hint = SKLabelNode(fontNamed: "HiraginoSans-W6")
         hint.text = "ドン"
-        hint.fontSize = 13
-        hint.fontColor = UIColor(white: 0.3, alpha: 0.6)
+        hint.fontSize = 15
+        hint.fontColor = UIColor(white: 0.3, alpha: 0.55)
         hint.verticalAlignmentMode = .center
-        hint.position = drumCenter
+        hint.position = CGPoint(x: drumCenter.x, y: max(18, (visibleTop + max(0, drumCenter.y)) / 2))
         drumLayer.addChild(hint)
+        for sx in [-1.0, 1.0] as [CGFloat] {
+            let ka = SKLabelNode(fontNamed: "HiraginoSans-W6")
+            ka.text = "カッ"
+            ka.fontSize = 13
+            ka.fontColor = UIColor(white: 1, alpha: 0.5)
+            ka.verticalAlignmentMode = .center
+            let a: CGFloat = .pi / 2 - sx * 0.55
+            let rr = (drumR + faceR) / 2
+            ka.position = CGPoint(x: drumCenter.x + cos(a) * rr, y: drumCenter.y + sin(a) * rr)
+            ka.zRotation = a - .pi / 2
+            drumLayer.addChild(ka)
+        }
 
-        // 左右のパネル
-        let pw = min(W * 0.22, drumCenter.x - drumR - 30)
-        leftPanel = makePanel(centerX: (drumCenter.x - drumR) / 2, width: pw)
-        rightPanel = makePanel(centerX: (W + drumCenter.x + drumR) / 2, width: pw)
-        _ = H
+        // 左右下のパネル
+        let sideSpace = drumCenter.x - drumR
+        let pw = max(110, min(W * 0.22, sideSpace - 24))
+        let leftX = max(pw / 2 + 12, sideSpace / 2)
+        let rightX = W - leftX
+        let hasRoll = request.course?.conditions.roll != nil
+        let lowY = max(52, bottomTop * 0.3)
+        let highY = lowY + 96
+        leftPanel = makePanel(centerX: leftX, centerY: hasRoll ? highY : lowY, width: pw)
+        rightPanel = makePanel(centerX: rightX, centerY: hasRoll ? highY : lowY, width: pw)
+        if hasRoll {
+            rollPanel = makePanel(centerX: leftX, centerY: lowY, width: pw)
+        }
     }
 
-    private func makePanel(centerX: CGFloat, width: CGFloat) -> Panel {
+    private func makePanel(centerX: CGFloat, centerY: CGFloat, width: CGFloat) -> Panel {
         let root = SKNode()
-        root.position = CGPoint(x: centerX, y: drumCenter.y)
+        root.position = CGPoint(x: centerX, y: centerY)
         let bg = SKSpriteNode(color: UIColor(white: 0, alpha: 0.35), size: CGSize(width: width, height: 86))
         root.addChild(bg)
         let title = SKLabelNode(fontNamed: "HiraginoSans-W6")
@@ -372,6 +406,7 @@ final class GameScene: SKScene {
         bar.anchorPoint = CGPoint(x: 0, y: 0.5)
         bar.position = barBack.position
         root.addChild(bar)
+        root.zPosition = 40
         hudLayer.addChild(root)
         return Panel(root: root, title: title, value: value, barBack: barBack, bar: bar, width: width - 20)
     }
@@ -555,6 +590,16 @@ final class GameScene: SKScene {
             label = isLast ? "FINISH" : "STAGE CLEAR"
         } else {
             label = soul >= SoulGauge.clearLine ? "クリア!" : "クリア失敗…"
+        }
+
+        if isLast, let need = request.course?.conditions.roll, stageResults.reduce(0, { $0 + $1.rollHits }) < need {
+            // 連打が足りなかった
+            phase = .finished
+            showBanner("不合格…", sub: "連打が足りませんでした", hold: 1.6, color: Judgment.miss.uiColor)
+            run(.sequence([.wait(forDuration: 2.0), .run { [weak self] in
+                self?.deliver(failed: true, retired: false)
+            }]))
+            return
         }
 
         if isLast {
@@ -873,6 +918,10 @@ final class GameScene: SKScene {
         }
     }
 
+    private func courseRollHits() -> Int {
+        stageResults.reduce(rollHits) { $0 + $1.rollHits }
+    }
+
     private func courseCounts() -> JudgeCounts {
         stageResults.reduce(stageCounts) { $0 + $1.counts }
     }
@@ -1016,6 +1065,17 @@ final class GameScene: SKScene {
             let total = courseCounts()
             setPanel(left, title: "可 (GOOD)", count: total.good, limit: cond.good, color: Judgment.good.uiColor)
             setPanel(right, title: "不可 (MISS)", count: total.miss, limit: cond.miss, color: Judgment.miss.uiColor)
+            if let rp = rollPanel, let need = cond.roll {
+                let done = courseRollHits()
+                let remain = max(0, need - done)
+                rp.title.text = "連打 (以上)"
+                rp.title.fontColor = Palette.roll
+                rp.value.text = remain > 0 ? "あと \(remain)" : "達成!"
+                rp.value.fontColor = remain > 0 ? .white : Palette.roll
+                let ratio = CGFloat(min(done, need)) / CGFloat(max(1, need))
+                rp.bar.size = CGSize(width: rp.width * ratio, height: rp.bar.size.height)
+                rp.bar.color = Palette.roll
+            }
         } else {
             left.title.text = "連打"
             left.value.text = "\(rollHits)"

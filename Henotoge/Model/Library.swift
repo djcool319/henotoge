@@ -97,14 +97,16 @@ struct Song: Decodable, Identifiable {
     }
 }
 
-/// 段位の合格条件。それぞれの回数「未満」なら合格。nil は条件なし
+/// 段位の合格条件。可・不可はそれぞれの回数「未満」、連打はその回数「以上」で合格。nil は条件なし
 struct CourseConditions: Decodable {
     let good: Int?
     let miss: Int?
+    let roll: Int?
 
     enum CodingKeys: String, CodingKey {
         case good = "GOOD"
         case miss = "MISS"
+        case roll = "ROLL"
     }
 
     func limit(for j: Judgment) -> Int? {
