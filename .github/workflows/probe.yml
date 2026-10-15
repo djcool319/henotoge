@@ -1,0 +1,24 @@
+name: Probe voices
+on:
+  push:
+    branches: [probe]
+permissions:
+  contents: write
+jobs:
+  probe:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Probe
+        run: |
+          {
+            echo "== say voices (ja) =="; say -v '?' | grep -i -E "ja_JP|Kyoko|Otoya" || echo none
+            echo "== python =="; python3 --version
+            python3 -m pip install --break-system-packages numpy scipy pyworld pyopenjtalk 2>&1 | tail -3
+            python3 -c "import pyworld; print('pyworld ok', pyworld.__version__)" 2>&1
+            python3 -c "import pyopenjtalk, numpy as np; x,sr=pyopenjtalk.tts('こんにちは'); print('pyopenjtalk ok', len(x), sr)" 2>&1 | tail -2
+            say -v Kyoko -o /tmp/t.aiff "ら" && afinfo /tmp/t.aiff | head -5 || echo "say kyoko failed"
+          } > probe.txt 2>&1
+          cat probe.txt
+          git config user.name "github-actions"; git config user.email "actions@github.com"
+          git add probe.txt && git commit -m "probe result" && git push
